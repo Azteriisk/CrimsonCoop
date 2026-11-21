@@ -91,10 +91,17 @@ add_library(CrimsonCoop SHARED
 )
 target_link_libraries(CrimsonCoop PRIVATE minhook imgui d3d12 dxgi)
 
+# Dedicated Standalone Co-Op Launcher (Zero permanent game file modifications)
+add_executable(CrimsonCoopLauncher
+    src/launcher.cpp
+)
+
 if (MSVC)
     target_compile_options(cd_coop_harness PRIVATE /W4 /permissive-)
     target_compile_options(CrimsonCoop PRIVATE /W4 /permissive-)
+    target_compile_options(CrimsonCoopLauncher PRIVATE /W4 /permissive-)
 else()
     target_compile_options(cd_coop_harness PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
     target_compile_options(CrimsonCoop PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
+    target_compile_options(CrimsonCoopLauncher PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
 endif()

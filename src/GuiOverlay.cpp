@@ -1,4 +1,5 @@
 #include "GuiOverlay.hpp"
+#include "Logger.hpp"
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_dx12.h>
@@ -7,7 +8,7 @@
 namespace CrimsonCoop {
 
 bool GuiOverlay::s_isInitialized = false;
-bool GuiOverlay::s_isVisible = true;
+bool GuiOverlay::s_isVisible = true; // Open by default on launch so the user sees it immediately!
 ToastNotification GuiOverlay::s_activeToast{};
 ConflictDialogState GuiOverlay::s_conflictDialog{};
 SwapPromptState GuiOverlay::s_swapPrompt{};
@@ -17,8 +18,11 @@ static double GetCurrentTimeSeconds() {
     return std::chrono::duration<double>(now).count();
 }
 
-bool GuiOverlay::Initialize(HWND hWnd, ID3D12Device* device, int bufferCount, ID3D12DescriptorHeap* srvHeap) {
+bool GuiOverlay::Initialize(HWND hWnd, ID3D12Device* device, int bufferCount, DXGI_FORMAT rtvFormat, ID3D12DescriptorHeap* srvHeap) {
     if (s_isInitialized) return true;
+
+    Logger::Log("[GuiOverlay] Initializing Dear ImGui for window %p, buffers: %d, format: %d...\n",
+                (void*)hWnd, bufferCount, rtvFormat);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -31,30 +35,37 @@ bool GuiOverlay::Initialize(HWND hWnd, ID3D12Device* device, int bufferCount, ID
     style.WindowRounding = 6.0f;
     style.FrameRounding = 4.0f;
     style.PopupRounding = 6.0f;
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.08f, 0.08f, 0.10f, 0.85f);
-    style.Colors[ImGuiCol_Header]   = ImVec4(0.58f, 0.18f, 0.18f, 0.80f); // Crimson accent
+    style.Colors[ImGuiCol_WindowBg]  = ImVec4(0.08f, 0.08f, 0.10f, 0.90f);
+    style.Colors[ImGuiCol_Header]    = ImVec4(0.58f, 0.18f, 0.18f, 0.85f); // Crimson accent
+    style.Colors[ImGuiCol_Button]    = ImVec4(0.40f, 0.12f, 0.12f, 0.80f);
+    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.65f, 0.18f, 0.18f, 1.0f);
+    style.Colors[ImGuiCol_ButtonActive]  = ImVec4(0.80f, 0.22f, 0.22f, 1.0f);
 
     if (!ImGui_ImplWin32_Init(hWnd)) {
+        Logger::Log("[GuiOverlay] ImGui_ImplWin32_Init failed!\n");
         return false;
     }
 
     if (!ImGui_ImplDX12_Init(
             device,
             bufferCount,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
+            rtvFormat,
             srvHeap,
             srvHeap->GetCPUDescriptorHandleForHeapStart(),
             srvHeap->GetGPUDescriptorHandleForHeapStart())) {
+        Logger::Log("[GuiOverlay] ImGui_ImplDX12_Init failed!\n");
         ImGui_ImplWin32_Shutdown();
         return false;
     }
 
     s_isInitialized = true;
+    Logger::Log("[GuiOverlay] Dear ImGui successfully initialized!\n");
     return true;
 }
 
 void GuiOverlay::Shutdown() {
     if (!s_isInitialized) return;
+    Logger::Log("[GuiOverlay] Shutting down Dear ImGui...\n");
     ImGui_ImplDX12_Shutdown();
     ImGui_ImplWin32_Shutdown();
     ImGui::DestroyContext();
@@ -64,6 +75,7 @@ void GuiOverlay::Shutdown() {
 void GuiOverlay::ShowToast(const std::string& message, double durationSeconds) {
     s_activeToast.message = message;
     s_activeToast.expireTime = GetCurrentTimeSeconds() + durationSeconds;
+    Logger::Log("[GuiOverlay] Toast: %s\n", message.c_str());
 }
 
 void GuiOverlay::OpenConflictDialog(uint8_t availableMask, std::function<void(CharacterType)> onSelected) {
@@ -86,7 +98,11 @@ void GuiOverlay::Render(SessionManager* pSession) {
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    if (s_isVisible && pSession != nullptr) {
+    // 1. Always draw persistent Watermark / Status Badge so the user sees the mod is active
+    DrawWatermarkBadge(pSession);
+
+    // 2. Full Greymane Co-Op HUD & Menu (When s_isVisible is true)
+    if (s_isVisible) {
         DrawPartyHUD(pSession);
         DrawConflictModal();
         DrawSwapPrompt(pSession);
@@ -96,53 +112,140 @@ void GuiOverlay::Render(SessionManager* pSession) {
     ImGui::Render();
 }
 
+void GuiOverlay::DrawWatermarkBadge(SessionManager* pSession) {
+    ImGui::SetNextWindowPos(ImVec2(15.0f, 15.0f), ImGuiCond_Always);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoNav;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.8f, 0.2f, 0.2f, 0.8f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.05f, 0.07f, 0.85f));
+
+    if (ImGui::Begin("##CrimsonCoopWatermark", nullptr, flags)) {
+        // Glowing status indicator
+        ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "[●] Crimson Desert Co-Op");
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (pSession) {
+            CharacterType activeChar = pSession->GetLocalCharacter();
+            const char* charName = CharacterToString(activeChar);
+            ImVec4 charCol = ImVec4(0.9f, 0.7f, 0.2f, 1.0f);
+            if (activeChar == CharacterType::Damiane) charCol = ImVec4(0.3f, 0.8f, 0.95f, 1.0f);
+            if (activeChar == CharacterType::Oongka)  charCol = ImVec4(0.95f, 0.3f, 0.3f, 1.0f);
+            ImGui::TextColored(charCol, "%s", charName);
+        } else {
+            ImGui::TextColored(ImVec4(0.9f, 0.6f, 0.2f, 1.0f), "Kliff");
+        }
+
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+
+        if (ImGui::SmallButton(s_isVisible ? "Hide [F2]" : "Open Menu [F2]")) {
+            s_isVisible = !s_isVisible;
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
+}
+
 void GuiOverlay::DrawPartyHUD(SessionManager* pSession) {
-    ImGui::SetNextWindowPos(ImVec2(20.0f, 20.0f), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowSize(ImVec2(280.0f, 0.0f));
+    ImGui::SetNextWindowPos(ImVec2(15.0f, 65.0f), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(340.0f, 0.0f));
 
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize;
-    if (ImGui::Begin("Greymane Party (3P Co-Op)", nullptr, flags)) {
-        const auto& roster = pSession->GetRoster();
+    ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize;
+    if (ImGui::Begin("Greymane Party (3-Player Co-Op)", &s_isVisible, flags)) {
+        // Section 1: Save Sandbox Status
+        ImGui::TextColored(ImVec4(0.3f, 0.9f, 0.4f, 1.0f), "[Save Sandbox Active]");
+        ImGui::TextDisabled("Single-player Slot0.sav is protected.");
+        ImGui::TextDisabled("Redirected -> CoopSaveGames\\*.cdcoop");
+        ImGui::Separator();
 
-        for (const auto& [steamId, info] : roster) {
-            ImGui::PushID(static_cast<int>(steamId));
+        // Section 2: Session Roster
+        if (pSession) {
+            const auto& roster = pSession->GetRoster();
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f), "Party Roster (%d / %d):",
+                               static_cast<int>(roster.size()), static_cast<int>(MAX_PLAYERS));
 
-            // Character Icon / Name header
-            const char* charName = CharacterToString(info.character);
-            ImVec4 roleColor = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-            if (info.character == CharacterType::Kliff)   roleColor = ImVec4(0.9f, 0.6f, 0.2f, 1.0f); // Gold
-            if (info.character == CharacterType::Damiane) roleColor = ImVec4(0.3f, 0.7f, 0.9f, 1.0f); // Teal
-            if (info.character == CharacterType::Oongka)  roleColor = ImVec4(0.9f, 0.3f, 0.3f, 1.0f); // Crimson
+            for (const auto& [steamId, info] : roster) {
+                ImGui::PushID(static_cast<int>(steamId));
 
-            ImGui::TextColored(roleColor, "[%s] %s", charName, info.playerName.c_str());
-            ImGui::SameLine();
-            ImGui::TextDisabled(info.isHost ? "(Host)" : "(Peer)");
+                const char* charName = CharacterToString(info.character);
+                ImVec4 roleColor = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+                if (info.character == CharacterType::Kliff)   roleColor = ImVec4(0.95f, 0.65f, 0.2f, 1.0f); // Gold
+                if (info.character == CharacterType::Damiane) roleColor = ImVec4(0.3f, 0.8f, 0.95f, 1.0f); // Teal
+                if (info.character == CharacterType::Oongka)  roleColor = ImVec4(0.95f, 0.3f, 0.3f, 1.0f); // Crimson
 
-            // Simulated Health and Stamina bars
-            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.2f, 0.7f, 0.3f, 1.0f));
-            ImGui::ProgressBar(0.85f, ImVec2(-1.0f, 10.0f), "");
-            ImGui::PopStyleColor();
+                ImGui::TextColored(roleColor, "[%s] %s", charName, info.playerName.c_str());
+                ImGui::SameLine();
+                ImGui::TextDisabled(info.isHost ? "(Host/Local)" : "(Remote Peer)");
 
-            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.9f, 0.8f, 0.2f, 1.0f));
-            ImGui::ProgressBar(0.60f, ImVec2(-1.0f, 6.0f), "");
-            ImGui::PopStyleColor();
+                // Health & Stamina bars
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.2f, 0.75f, 0.3f, 1.0f));
+                ImGui::ProgressBar(1.0f, ImVec2(-1.0f, 8.0f), "");
+                ImGui::PopStyleColor();
 
-            ImGui::Spacing();
-            ImGui::PopID();
-        }
+                ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ImVec4(0.9f, 0.8f, 0.2f, 1.0f));
+                ImGui::ProgressBar(0.85f, ImVec2(-1.0f, 5.0f), "");
+                ImGui::PopStyleColor();
 
-        // 2-Player Duo Session Indicator & Reserve Slot
-        if (pSession->IsDuoSession()) {
-            auto reserves = pSession->GetUnoccupiedCharacters();
-            if (!reserves.empty()) {
-                ImGui::Separator();
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), "[2P Duo Mode Active]");
-                ImGui::TextDisabled("Reserve Character: %s", CharacterToString(reserves[0]));
-                ImGui::TextWrapped("Either player can swap into %s anytime using the radial wheel.", CharacterToString(reserves[0]));
+                ImGui::Spacing();
+                ImGui::PopID();
             }
-        } else if (roster.size() < MAX_PLAYERS) {
-            ImGui::TextDisabled("Waiting for %d Greymane companion(s)...", static_cast<int>(MAX_PLAYERS - roster.size()));
+
+            // Section 3: 2-Player Duo Session Indicator & Reserve Slot
+            if (pSession->IsDuoSession()) {
+                auto reserves = pSession->GetUnoccupiedCharacters();
+                if (!reserves.empty()) {
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.95f, 1.0f), "[2-Player Duo Mode Active]");
+                    ImGui::Text("Reserve Hero: %s", CharacterToString(reserves[0]));
+                    if (ImGui::Button("Swap into Reserve Hero", ImVec2(-1.0f, 26.0f))) {
+                        pSession->SwapToReserve();
+                        ShowToast(std::string("Swapped to reserve hero: ") + CharacterToString(reserves[0]));
+                    }
+                }
+            } else if (roster.size() == 1) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.9f, 0.7f, 0.3f, 1.0f), "[Solo / Host Mode]");
+                ImGui::TextDisabled("Steam P2P Sockets listening for teammates.");
+                
+                // Hero Switcher for Solo testing
+                ImGui::Spacing();
+                ImGui::Text("Switch Local Hero:");
+                std::string switchReason;
+                if (ImGui::Button("Kliff", ImVec2(90.0f, 24.0f))) {
+                    pSession->SwitchLocalCharacter(CharacterType::Kliff, switchReason);
+                    ShowToast("Switched active hero to Kliff");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Damiane", ImVec2(90.0f, 24.0f))) {
+                    pSession->SwitchLocalCharacter(CharacterType::Damiane, switchReason);
+                    ShowToast("Switched active hero to Damiane");
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Oongka", ImVec2(90.0f, 24.0f))) {
+                    pSession->SwitchLocalCharacter(CharacterType::Oongka, switchReason);
+                    ShowToast("Switched active hero to Oongka");
+                }
+            }
         }
+
+        // Section 4: Matchmaking & Steam Controls
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "Steam P2P / Networking:");
+        if (ImGui::Button("Test Co-Op Toast Notification", ImVec2(-1.0f, 24.0f))) {
+            ShowToast("Greymane Co-Op Alert: Kliff engaged in combat!");
+        }
+
+        // Section 5: Telemetry Footer
+        ImGui::Separator();
+        ImGui::TextDisabled("Tick Rate: 30 Hz | Hermite Splines: ON");
+        ImGui::TextDisabled("Toggle Menu: F2 or Insert key");
     }
     ImGui::End();
 }
@@ -229,18 +332,23 @@ void GuiOverlay::DrawToasts() {
 
     ImVec2 viewportSize = ImGui::GetMainViewport()->Size;
     ImGui::SetNextWindowPos(ImVec2(viewportSize.x * 0.5f, viewportSize.y - 80.0f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowBgAlpha(0.90f);
+    ImGui::SetNextWindowBgAlpha(0.92f);
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                              ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                              ImGuiWindowFlags_NoNav;
 
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.9f, 0.3f, 0.3f, 0.8f));
+
     if (ImGui::Begin("##ToastWindow", nullptr, flags)) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[Co-Op Warning]");
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "[Co-Op Alert]");
         ImGui::SameLine();
         ImGui::TextUnformatted(s_activeToast.message.c_str());
     }
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 } // namespace CrimsonCoop

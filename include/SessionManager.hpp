@@ -50,6 +50,23 @@ public:
     PlayerId GetHostSteamId() const { return m_hostSteamId; }
     const std::unordered_map<PlayerId, PlayerSessionInfo>& GetRoster() const { return m_roster; }
 
+    // Local player helpers
+    CharacterType GetLocalCharacter() const {
+        auto it = m_roster.find(m_hostSteamId);
+        return (it != m_roster.end()) ? it->second.character : CharacterType::Kliff;
+    }
+
+    bool SwitchLocalCharacter(CharacterType targetChar, std::string& outReason) {
+        return SwitchToUnoccupied(m_hostSteamId, targetChar, outReason);
+    }
+
+    bool SwapToReserve() {
+        auto reserves = GetUnoccupiedCharacters();
+        if (reserves.empty()) return false;
+        std::string reason;
+        return SwitchToUnoccupied(m_hostSteamId, reserves[0], reason);
+    }
+
 private:
     PlayerId m_hostSteamId;
     std::unordered_map<PlayerId, PlayerSessionInfo> m_roster;

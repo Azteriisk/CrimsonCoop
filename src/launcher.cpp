@@ -23,6 +23,26 @@ std::wstring CleanPath(std::wstring path) {
     return path;
 }
 
+// Find existing process by name
+DWORD FindProcessId(const std::wstring& processName) {
+    DWORD processId = 0;
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap != INVALID_HANDLE_VALUE) {
+        PROCESSENTRY32W pe32{};
+        pe32.dwSize = sizeof(pe32);
+        if (Process32FirstW(hSnap, &pe32)) {
+            do {
+                if (_wcsicmp(pe32.szExeFile, processName.c_str()) == 0) {
+                    processId = pe32.th32ProcessID;
+                    break;
+                }
+            } while (Process32NextW(hSnap, &pe32));
+        }
+        CloseHandle(hSnap);
+    }
+    return processId;
+}
+
 // Read all Steam Library Folders from libraryfolders.vdf
 std::vector<fs::path> GetSteamLibraryFolders() {
     std::vector<fs::path> libraries;
@@ -35,7 +55,6 @@ std::vector<fs::path> GetSteamLibraryFolders() {
             fs::path mainSteam(steamPath);
             libraries.push_back(mainSteam);
 
-            // Parse libraryfolders.vdf
             fs::path vdfPath = mainSteam / L"steamapps" / L"libraryfolders.vdf";
             if (fs::exists(vdfPath)) {
                 std::ifstream vdfFile(vdfPath);
@@ -47,7 +66,6 @@ std::vector<fs::path> GetSteamLibraryFolders() {
                         size_t secondQuote = line.find('"', firstQuote + 1);
                         if (firstQuote != std::string::npos && secondQuote != std::string::npos) {
                             std::string rawPath = line.substr(firstQuote + 1, secondQuote - firstQuote - 1);
-                            // Replace escaped double backslashes with single backslash
                             std::string cleanPathStr;
                             for (size_t i = 0; i < rawPath.length(); ++i) {
                                 if (rawPath[i] == '\\' && i + 1 < rawPath.length() && rawPath[i + 1] == '\\') {
@@ -70,9 +88,21 @@ std::vector<fs::path> GetSteamLibraryFolders() {
     return libraries;
 }
 
-// 1. Locate the Game Executable across all drives and Steam libraries
+// Locate the Game Executable across all drives and Steam libraries
 std::wstring FindGameExecutable() {
-    // Check local directory and parent directories first
+    // 1. Direct drive checks for known Steam libraries (D:, C:, E:)
+    std::vector<fs::path> directChecks = {
+        L"D:\\SteamLibrary\\steamapps\\common\\Crimson Desert\\bin64\\CrimsonDesert.exe",
+        L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert\\bin64\\CrimsonDesert.exe",
+        L"E:\\SteamLibrary\\steamapps\\common\\Crimson Desert\\bin64\\CrimsonDesert.exe"
+    };
+    for (const auto& path : directChecks) {
+        if (fs::exists(path)) {
+            return fs::canonical(path).wstring();
+        }
+    }
+
+    // 2. Local directory and parent directories
     fs::path current = fs::current_path();
     std::vector<fs::path> localSearch = {
         current / GAME_EXE_NAME,
@@ -88,7 +118,7 @@ std::wstring FindGameExecutable() {
         }
     }
 
-    // Check all Steam Library Folders (C:, D:, E:, etc.)
+    // 3. Dynamic search across all detected Steam Library Folders
     auto libraries = GetSteamLibraryFolders();
     for (const auto& lib : libraries) {
         fs::path candidate = lib / L"steamapps" / L"common" / L"Crimson Desert" / L"bin64" / GAME_EXE_NAME;
@@ -101,22 +131,10 @@ std::wstring FindGameExecutable() {
         }
     }
 
-    // Direct drive checks for common secondary locations
-    std::vector<fs::path> directChecks = {
-        L"D:\\SteamLibrary\\steamapps\\common\\Crimson Desert\\bin64\\CrimsonDesert.exe",
-        L"E:\\SteamLibrary\\steamapps\\common\\Crimson Desert\\bin64\\CrimsonDesert.exe",
-        L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Crimson Desert\\bin64\\CrimsonDesert.exe"
-    };
-    for (const auto& path : directChecks) {
-        if (fs::exists(path)) {
-            return fs::canonical(path).wstring();
-        }
-    }
-
     return L"";
 }
 
-// 2. Locate the Co-Op Mod DLL
+// Locate the Co-Op Mod DLL
 std::wstring FindModDll() {
     fs::path current = fs::current_path();
     std::vector<fs::path> dllSearchPaths = {
@@ -135,7 +153,7 @@ std::wstring FindModDll() {
     return L"";
 }
 
-// 3. Inject DLL into the Target Process Memory
+// Inject DLL into the Target Process Memory with exit code verification
 bool InjectDll(HANDLE hProcess, const std::wstring& dllPath) {
     size_t pathSize = (dllPath.length() + 1) * sizeof(wchar_t);
 
@@ -166,10 +184,26 @@ bool InjectDll(HANDLE hProcess, const std::wstring& dllPath) {
         return false;
     }
 
-    WaitForSingleObject(hThread, 5000);
+    DWORD waitRes = WaitForSingleObject(hThread, 8000);
+    if (waitRes != WAIT_OBJECT_0) {
+        std::wcerr << L"[Error] Remote LoadLibraryW call timed out or failed (Code: " << waitRes << L")\n";
+        CloseHandle(hThread);
+        VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
+        return false;
+    }
+
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread, &exitCode);
     CloseHandle(hThread);
     VirtualFreeEx(hProcess, pRemoteMem, 0, MEM_RELEASE);
 
+    if (exitCode == 0) {
+        std::wcerr << L"[Error] LoadLibraryW returned NULL inside the game process!\n";
+        std::wcerr << L"Make sure CrimsonCoop.dll is built and all dependencies are present.\n";
+        return false;
+    }
+
+    std::wcout << L"  -> [SUCCESS] Injected at remote module handle: 0x" << std::hex << exitCode << std::dec << L"\n";
     return true;
 }
 
@@ -185,14 +219,42 @@ int main() {
     std::wstring modDllPath = CrimsonLauncher::FindModDll();
     if (modDllPath.empty()) {
         std::wcerr << L"[Error] Could not find CrimsonCoop.dll!\n";
-        std::wcerr << L"Make sure CrimsonCoop.dll is compiled.\n";
+        std::wcerr << L"Please ensure CrimsonCoop.dll is compiled.\n";
         std::cout << "\nPress ENTER to exit...";
         std::cin.get();
         return 1;
     }
     std::wcout << L"[Launcher] Found Co-Op Mod: " << modDllPath << L"\n";
 
-    // 2. Locate the Game Executable across Steam libraries
+    // 2. Check if Crimson Desert is ALREADY running (Hot-attach mode)
+    DWORD existingPid = CrimsonLauncher::FindProcessId(CrimsonLauncher::GAME_EXE_NAME);
+    if (existingPid != 0) {
+        std::wcout << L"[Launcher] Detected running " << CrimsonLauncher::GAME_EXE_NAME << L" (PID: " << existingPid << L")!\n";
+        std::cout << "[Launcher] Attaching CrimsonCoop.dll into running game session...\n";
+
+        HANDLE hProcess = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, existingPid);
+        if (!hProcess) {
+            std::wcerr << L"[Error] Failed to open game process (Code: " << GetLastError() << L")\n";
+            std::wcerr << L"Hint: Try running CrimsonCoopLauncher as Administrator.\n";
+            std::cout << "\nPress ENTER to exit...";
+            std::cin.get();
+            return 1;
+        }
+
+        if (CrimsonLauncher::InjectDll(hProcess, modDllPath)) {
+            std::cout << "\n=========================================================\n";
+            std::cout << "  Co-Op Mod Successfully Attached to Running Game!       \n";
+            std::cout << "  -> Press F2 or INSERT in-game to toggle the Co-Op HUD. \n";
+            std::cout << "  -> Save sandbox active: Slot0.sav is untouched.        \n";
+            std::cout << "=========================================================\n";
+        }
+        CloseHandle(hProcess);
+
+        Sleep(3000);
+        return 0;
+    }
+
+    // 3. Game is not running: Locate the Game Executable
     std::wstring gameExePath = CrimsonLauncher::FindGameExecutable();
     if (gameExePath.empty()) {
         std::cout << "[Launcher] Could not auto-detect CrimsonDesert.exe across Steam libraries.\n";
@@ -210,10 +272,10 @@ int main() {
         return 1;
     }
 
-    std::wcout << L"[Launcher] Target Game Detected: " << gameExePath << L"\n";
-    std::wcout << L"[Launcher] Launching Crimson Desert in Co-Op Mode (Suspended Injection)...\n";
+    std::wcout << L"[Launcher] Target Game: " << gameExePath << L"\n";
+    std::wcout << L"[Launcher] Launching Crimson Desert in Co-Op Mode...\n";
 
-    // 3. Launch Process Suspended (Clean memory injection before engine boot)
+    // 4. Launch Game Process
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
@@ -226,7 +288,7 @@ int main() {
         nullptr,
         nullptr,
         FALSE,
-        CREATE_SUSPENDED,
+        0, // Normal creation allows Windows loader lock to complete smoothly
         nullptr,
         gameDir.c_str(),
         &si,
@@ -244,7 +306,13 @@ int main() {
         return 1;
     }
 
-    // 4. Inject Mod DLL purely into RAM for this session
+    std::cout << "[Launcher] Game process started (PID: " << pi.dwProcessId << ").\n";
+    std::cout << "[Launcher] Initializing BlackSpace engine runtime...\n";
+
+    // Allow the game 2 seconds to initialize ntdll/kernel32/d3d12 before injection
+    Sleep(2000);
+
+    // 5. Inject Mod DLL purely into RAM for this session
     std::cout << "[Launcher] Injecting CrimsonCoop.dll into game memory...\n";
     if (CrimsonLauncher::InjectDll(pi.hProcess, modDllPath)) {
         std::cout << "  -> [SUCCESS] Co-Op mod injected into RAM!\n";
@@ -254,16 +322,16 @@ int main() {
         std::wcerr << L"  -> [FAILED] DLL Injection failed. Game will start vanilla.\n";
     }
 
-    // 5. Resume game execution
-    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 
     std::cout << "\n=========================================================\n";
     std::cout << "  Game Launched Successfully in Co-Op Mode!              \n";
+    std::cout << "  -> Press F2 or INSERT in-game to toggle the Co-Op HUD. \n";
+    std::cout << "  -> Save sandbox active: Slot0.sav is untouched.        \n";
     std::cout << "  (To play vanilla single-player, launch via Steam)      \n";
     std::cout << "=========================================================\n";
 
-    Sleep(2500);
+    Sleep(3000);
     return 0;
 }

@@ -39,6 +39,23 @@
    - [7.2 Memory Safety: SEH Framing & Plausibility Sanitization](#72-memory-safety-seh-framing--plausibility-sanitization)
    - [7.3 Hooking Policy & Game-Thread Synchronization](#73-hooking-policy--game-thread-synchronization)
    - [7.4 Surviving Game Patches & ABI Drift](#74-surviving-game-patches--abi-drift)
+8. [Summary of Critical Engine Offsets & Constants](#8-summary-of-critical-engine-offsets--constants)
+9. [DirectX 12 Presentation Pipeline & Streamline Interposer Hooks](#9-directx-12-presentation-pipeline--streamline-interposer-hooks)
+   - [9.1 DXGI SwapChain VTable Topology](#91-dxgi-swapchain-vtable-topology)
+   - [9.2 The CommandQueue Conundrum](#92-the-commandqueue-conundrum)
+   - [9.3 Explicit Resource Barrier & Render Pass Lifecycle](#93-explicit-resource-barrier--render-pass-lifecycle)
+10. [Windows NT Process Lifecycle, DRM Interactions & In-Memory Injection](#10-windows-nt-process-lifecycle-drm-interactions--in-memory-injection)
+    - [10.1 The Suspended Process Deadlock Trap](#101-the-suspended-process-deadlock-trap)
+    - [10.2 The Dual-Phase Injection Pattern](#102-the-dual-phase-injection-pattern)
+    - [10.3 Security & Anti-Cheat Landscape](#103-security--anti-cheat-landscape)
+11. [Save Game Sandboxing & Virtual File System Redirection (.cdcoop)](#11-save-game-sandboxing--virtual-file-system-redirection-cdcoop)
+    - [11.1 Hooking kernel32.dll!CreateFileW](#111-hooking-kernel32dllcreatefilew)
+    - [11.2 Custom .cdcoop Container Specification](#112-custom-cdcoop-container-specification)
+12. [Native Steamworks SDR P2P Transport & Session Arbitration Protocol](#12-native-steamworks-sdr-p2p-transport--session-arbitration-protocol)
+    - [12.1 Dynamic VTable Binding](#121-dynamic-vtable-binding)
+    - [12.2 Session Arbitration: Trio vs. 2-Player Duo](#122-session-arbitration-trio-vs-2-player-duo)
+    - [12.3 Conflict Resolution Protocol](#123-conflict-resolution-protocol)
+13. [Mod Architecture Checklist & Troubleshooting Runbook](#13-mod-architecture-checklist--troubleshooting-runbook)
 
 ---
 
@@ -712,3 +729,183 @@ For rapid integration into external C++ codebases, the table below consolidates 
 | `Kliff Codename` | `"cd_phm_macduff"`| `string_view` | Matches `.../cd_phm_macduff_00000.app_xml`. |
 | `Damiane Codename` | `"cd_phw_damian"` | `string_view` | Matches `.../cd_phw_damian_00000.app_xml`. |
 | `Oongka Codename` | `"cd_phm_oongka"` | `string_view` | Matches `.../cd_phm_oongka_00000.app_xml`. |
+
+---
+
+## 9. DirectX 12 Presentation Pipeline & Streamline Interposer Hooks
+
+BlackSpace Engine employs a modern, asynchronous DirectX 12 render pipeline tightly integrated with NVIDIA Streamline (`sl.interposer.dll`), AMD FidelityFX (`amd_fidelityfx_loader_dx12.dll`), and Intel XeSS (`libxess.dll`). Understanding this pipeline is essential for stable in-game UI injection.
+
+### 9.1 DXGI SwapChain VTable Topology
+
+The game presents frames via a modern flip-model swapchain. To maintain complete coverage across borderless windowed, exclusive fullscreen, and frame-generation modes, mods must hook both `Present` and `Present1`:
+
+| Interface | VTable Index | Method Name | Hook Purpose |
+| :--- | :--- | :--- | :--- |
+| `IDXGISwapChain` | **8** | `Present` | Intercepts standard presentation calls. |
+| `IDXGISwapChain` | **13** | `ResizeBuffers` | Handles window resizing, device resets, and fullscreen toggles. Frees and recreates RTVs. |
+| `IDXGISwapChain1` | **22** | `Present1` | Intercepts modern flip-model presentations with dirty-rect optimization (used by BlackSpace). |
+| `ID3D12CommandQueue` | **10** | `ExecuteCommandLists` | Captures the game's native `DIRECT` command queue for UI draw call submission. |
+
+### 9.2 The CommandQueue Conundrum
+
+In DirectX 12, a custom command queue instantiated via `pDevice->CreateCommandQueue` **cannot** record commands writing to swapchain backbuffers owned by another queue. Attempting to do so triggers DXGI device removal:
+$$\text{D3D12 ERROR: A command list writing to a swap chain back buffer may only be executed on the queue associated with that buffer.}$$
+
+#### Solution: Dynamic Command Queue Interception
+1. Hook `ID3D12CommandQueue::ExecuteCommandLists` (VTable index 10) on a dummy queue created at startup.
+2. When the engine submits draw lists, inspect `pCommandQueue->GetDesc().Type`.
+3. If `Type == D3D12_COMMAND_LIST_TYPE_DIRECT`, record the pointer into `g_d3d12CommandQueue`.
+4. As a fallback, query `pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), ...)`.
+
+### 9.3 Explicit Resource Barrier & Render Pass Lifecycle
+
+Every frame rendered into the backbuffer must adhere to strict DirectX 12 state transitions:
+
+```mermaid
+sequenceDiagram
+    participant Engine as BlackSpace Engine
+    participant Hook as Dx12Hook (Present / Present1)
+    participant GPU as Direct3D 12 Device / GPU
+    participant Original as Original Present
+
+    Engine->>Hook: Present1(pSwapChain, SyncInterval, Flags, pParams)
+    Note over Hook: CurrentBackBufferIndex = pSwapChain->GetCurrentBackBufferIndex()
+    Hook->>GPU: CommandAllocator[idx]->Reset()
+    Hook->>GPU: CommandList->Reset(CommandAllocator[idx], nullptr)
+    Hook->>GPU: ResourceBarrier(PRESENT -> RENDER_TARGET)
+    Hook->>GPU: OMSetRenderTargets(1, &RenderTargetHandle[idx])
+    Hook->>GPU: SetDescriptorHeaps(1, &SrvHeap)
+    Hook->>Hook: ImGui_ImplDX12_RenderDrawData(drawData, CommandList)
+    Hook->>GPU: ResourceBarrier(RENDER_TARGET -> PRESENT)
+    Hook->>GPU: CommandList->Close()
+    Hook->>GPU: CommandQueue->ExecuteCommandLists(1, &CommandList)
+    Hook->>Original: oPresent1(pSwapChain, SyncInterval, Flags, pParams)
+```
+
+---
+
+## 10. Windows NT Process Lifecycle, DRM Interactions & In-Memory Injection
+
+### 10.1 The Suspended Process Deadlock Trap
+
+A common failure mode when writing custom game launchers is injecting a DLL into a process created with `CREATE_SUSPENDED`:
+1. `CreateProcessW(..., CREATE_SUSPENDED, ...)` halts the primary thread before `ntdll!LdrpInitializeProcess` completes.
+2. Calling `CreateRemoteThread` to run `LoadLibraryW` spawns a thread that attempts to acquire the Windows OS Loader Lock (`LdrpLoaderLock`).
+3. Because the suspended main thread is in the middle of process initialization, the remote thread deadlocks waiting for the loader lock.
+4. If the launcher relies on a fixed 5-second `WaitForSingleObject` timeout, it will time out, call `VirtualFreeEx` on the DLL path buffer, and only then call `ResumeThread`.
+5. The main thread finally resumes, unblocking the remote thread—which now reads deallocated memory, causing `LoadLibraryW` to fail silently.
+
+### 10.2 The Dual-Phase Injection Pattern
+
+To guarantee 100% reliable injection without risking loader lock deadlocks:
+
+```mermaid
+flowchart TD
+    Start["Launcher Launch"] --> CheckRunning{"Is CrimsonDesert.exe<br/>already running?"}
+    
+    CheckRunning -->|Yes| HotAttach["Phase A: Hot-Attach Mode<br/>OpenProcess(PROCESS_ALL_ACCESS)<br/>Inject CrimsonCoop.dll into running game"]
+    
+    CheckRunning -->|No| CleanLaunch["Phase B: Clean Launch Mode<br/>CreateProcessW(flags = 0)<br/>Let process initialize Win32 & CRT (1.5-2s)"]
+    
+    CleanLaunch --> Inject["VirtualAllocEx + WriteProcessMemory<br/>CreateRemoteThread(LoadLibraryW)"]
+    HotAttach --> Inject
+    
+    Inject --> VerifyExit{"WaitForSingleObject(8000)<br/>GetExitCodeThread(&exitCode)"}
+    VerifyExit -->|exitCode == 0| Fail["Report LoadLibraryW Failure<br/>Free Memory & Close Handles"]
+    VerifyExit -->|exitCode != 0| Success["Injection Confirmed!<br/>Remote HMODULE Validated<br/>Overlay Ready (F2)"]
+```
+
+### 10.3 Security & Anti-Cheat Landscape
+
+- **DRM Profile:** Crimson Desert employs **Denuvo Anti-Tamper** for executable integrity and license verification. Denuvo verifies disk signatures and prevents binary patching on disk; it **does not** act as a ring-0 anti-cheat (like BattlEye, EAC, or Vanguard).
+- **VAC / Anti-Cheat Status:** There is **no Valve Anti-Cheat (VAC)** and **no kernel-level anti-cheat driver** present in Crimson Desert.
+- **Zero-Footprint Policy:** By performing in-memory injection via `CrimsonCoopLauncher.exe` without altering game files on disk, launching the game normally through Steam remains 100% pure vanilla, with Steam achievements and leaderboards completely unaffected.
+
+---
+
+## 11. Save Game Sandboxing & Virtual File System Redirection (`.cdcoop`)
+
+To prevent multi-character progression flags and co-op world state from polluting single-player campaigns, all file operations targeting save games are virtualized at the Win32 API layer.
+
+### 11.1 Hooking `kernel32.dll!CreateFileW`
+
+Using MinHook, the mod intercepts calls to `CreateFileW`:
+- If `lpFileName` matches the pattern `SaveGames\*.sav`:
+  - Path rewritten to `CoopSaveGames\<filename>.cdcoop`.
+  - Ensures the target directory exists (`CreateDirectoryW`).
+  - Calls original `CreateFileW` with the redirected path.
+- All other game assets, engine shaders, and configurations pass through completely unmodified.
+
+### 11.2 Custom `.cdcoop` Container Specification
+
+The `.cdcoop` format is a binary container with strict schema validation:
+
+```text
+Offset    Type        Field Name                 Description
+----------------------------------------------------------------------------------------
+0x00      uint32_t    magic                      Magic identifier: 0x50434443 ('CDCP')
+0x04      uint32_t    version                    Container schema version (Current: 1)
+0x08      uint32_t    checksum                   CRC32 checksum over payload
+0x0C      uint32_t    characterCount             Active protagonist count (Fixed: 3)
+0x10      uint32_t    questFlagCount             Count of co-op world quest flags
+0x14      uint32_t    fastTravelPointCount       Discovered fast travel node count
+----------------------------------------------------------------------------------------
+Per-Character Blocks (3 entries, 32 bytes each):
+  +0x00   uint32_t    characterId                Kliff (1), Damiane (2), Oongka (3)
+  +0x04   uint32_t    level                      Hero progression level
+  +0x08   uint32_t    currentHp / maxHp          Health pool state
+  +0x10   uint32_t    currentStamina / maxStam   Stamina pool state
+  +0x18   uint64_t    experiencePoints           Total character XP
+----------------------------------------------------------------------------------------
+Dynamic Arrays:
+  +0x00   uint32_t[]  questFlags                 Bitset of synchronized world quests
+  +var    uint32_t[]  fastTravelIds              Array of unlocked travel point IDs
+```
+
+---
+
+## 12. Native Steamworks SDR P2P Transport & Session Arbitration Protocol
+
+Multiplayer replication is built directly on Valve's **Steam Datagram Relay (SDR)** via dynamic binding to `steam_api64.dll`.
+
+### 12.1 Dynamic VTable Binding
+Rather than statically linking to a specific SDK version, the mod queries the active game's `steam_api64.dll`:
+- `SteamAPI_Init` / `SteamAPI_Shutdown`
+- `SteamNetworkingSockets()` $\rightarrow$ Provides encrypted, NAT-punching P2P connections routed over Valve's global fiber backbone.
+- `SteamMatchmaking()` $\rightarrow$ Manages 3-player Greymane lobbies and friend invitations.
+
+### 12.2 Session Arbitration: Trio vs. 2-Player Duo
+
+The session protocol provides first-class support for both 3-player and 2-player configurations:
+
+| Session Mode | Player 1 (Host) | Player 2 (Peer) | Player 3 (Peer) | Reserve Mercenary Slot |
+| :--- | :--- | :--- | :--- | :--- |
+| **3-Player Trio** | Hero A (e.g. Kliff) | Hero B (e.g. Damiane) | Hero C (e.g. Oongka) | None (All 3 heroes actively piloted). |
+| **2-Player Duo** | Hero A (e.g. Kliff) | Hero B (e.g. Damiane) | *Unoccupied* | **Hero C is Reserve**. Either player can dynamically swap into Hero C using the radial wheel or overlay! |
+| **1-Player Solo / Host** | Hero A | *Unoccupied* | *Unoccupied* | Heroes B and C are Reserve. P2P server listens for connecting friends. |
+
+### 12.3 Conflict Resolution Protocol
+When a peer requests to join with a character already piloted by the host or a teammate:
+1. Host responds with `HandshakeStatus::ConflictCharacter` and bitmask of available heroes (`availableMask`).
+2. Client displays the **Character Conflict Arbitration Modal** in Dear ImGui.
+3. Peer selects an unoccupied Greymane; handshake finalizes with `HandshakeStatus::Accepted`.
+
+---
+
+## 13. Mod Architecture Checklist & Troubleshooting Runbook
+
+If the in-game overlay or co-op features do not appear:
+
+1. **Verify Log File:**  
+   Open `CrimsonDesert\bin64\CrimsonCoop.log` or `C:\Users\thera\code\CrimsonCoop\CrimsonCoop.log`.
+   - `[OK] ModMainThread`: Confirms DLL injection succeeded.
+   - `[OK] Save redirection active`: Confirms `CreateFileW` hook is online.
+   - `[OK] DX12 SwapChain & CommandQueue hooks active`: Confirms VTables were hooked.
+   - `[OK] SwapChain: Device=... Window=... BufferCount=...`: Confirms `Present` / `Present1` intercepted the game's actual swapchain.
+
+2. **Check Hot-Attach:**  
+   If launching via the launcher timed out, launch the game directly via Steam first. Once the game reaches the main menu or in-game world, run `.\build\CrimsonCoopLauncher.exe`. It will detect the running process PID and attach in ~100ms.
+
+3. **In-Game Toggle:**  
+   Press **`F2`** or **`INSERT`** to toggle the Greymane Co-Op HUD. A persistent status badge is also visible at the top-left of the screen (`[●] Crimson Desert Co-Op | Hero: Kliff | F2 Menu`).

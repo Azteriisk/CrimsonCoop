@@ -30,10 +30,10 @@ struct SwapPromptState {
 
 class GuiOverlay {
 public:
-    static bool Initialize(HWND hWnd, ID3D12Device* device, int bufferCount, ID3D12DescriptorHeap* srvHeap);
+    static bool Initialize(HWND hWnd, ID3D12Device* device, int bufferCount, DXGI_FORMAT rtvFormat, ID3D12DescriptorHeap* srvHeap);
     static void Shutdown();
 
-    // Renders the Co-Op HUD and modals into the current DX12 frame
+    // Renders the Co-Op HUD, watermark, and modals into the current DX12 frame
     static void Render(SessionManager* pSession);
 
     // Shows in-game toast notifications (e.g., "Cannot switch: Oongka is taken!")
@@ -47,8 +47,10 @@ public:
 
     static bool IsVisible() { return s_isVisible; }
     static void ToggleVisible() { s_isVisible = !s_isVisible; }
+    static void SetVisible(bool visible) { s_isVisible = visible; }
 
 private:
+    static void DrawWatermarkBadge(SessionManager* pSession);
     static void DrawPartyHUD(SessionManager* pSession);
     static void DrawConflictModal();
     static void DrawSwapPrompt(SessionManager* pSession);

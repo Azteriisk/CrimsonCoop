@@ -64,6 +64,7 @@ include_directories(
 
 # Common library sources
 set(CORE_SOURCES
+    src/Logger.cpp
     src/Interpolation.cpp
     src/SessionManager.cpp
     src/CoopSaveManager.cpp

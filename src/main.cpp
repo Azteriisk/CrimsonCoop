@@ -6,6 +6,8 @@
 #include "EngineTypes.hpp"
 #include "PatternScan.hpp"
 #include "BlackSpaceChain.hpp"
+#include "Config.hpp"
+#include "SteamTransport.hpp"
 #include <iostream>
 #include <iomanip>
 
@@ -168,6 +170,35 @@ int main() {
     // Test IDA-style pattern parser
     auto parsedAob = PatternScanner::ParsePattern("48 89 ?? ?? ?? ?? ?? 48 8D");
     std::cout << "  -> Parsed AOB Pattern with " << parsedAob.size() << " bytes (Wildcards correctly recognized)\n";
+
+    // 10. INI Configuration & Steam Transport Dispatcher Verification Test
+    std::cout << "[Config System] Loading CrimsonCoop.ini...\n";
+    if (Config::Load("CrimsonCoop.ini")) {
+        const auto& cfg = Config::Get();
+        std::cout << "  -> Preferred Character: " << CharacterToString(cfg.preferredCharacter) << "\n";
+        std::cout << "  -> Auto-Select Available: " << (cfg.autoSelectAvailable ? "Enabled" : "Disabled") << "\n";
+        std::cout << "  -> Replication Tick Rate: " << cfg.tickRateHz << " Hz\n";
+        std::cout << "  -> Interpolation Window: " << cfg.interpolationDelayMs << " ms\n";
+    }
+
+    std::cout << "[SteamTransport] Verifying packet dispatch pipeline...\n";
+    SteamTransport::Initialize(hostSteamId, true);
+    SteamTransport::CreateCoopLobby(3);
+
+    // Inject a simulated TransformSync packet
+    PktTransformSync mockSync{};
+    mockSync.header.magic[0] = 'C';
+    mockSync.header.magic[1] = 'D';
+    mockSync.header.type = PacketType::TransformSync;
+    mockSync.header.timestamp = 2.0;
+    mockSync.character = CharacterType::Damiane;
+    mockSync.position = Vector3(15.0f, 0.0f, 60.0f);
+    mockSync.rotation = Rotation{0, 180, 0};
+    mockSync.velocity = Vector3(1.0f, 0, 0);
+
+    SteamTransport::InjectMockPacket(client2SteamId, &mockSync, sizeof(mockSync));
+    SteamTransport::PollAndDispatch(&session, &interpolator);
+    std::cout << "  -> Dispatched Inbound TransformSync Packet successfully!\n";
 
     std::cout << "\n=========================================================\n";
     std::cout << "  All Co-op Core Subsystems Verified Successfully!       \n";

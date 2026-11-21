@@ -72,6 +72,8 @@ set(CORE_SOURCES
     src/Dx12Hook.cpp
     src/PatternScan.cpp
     src/BlackSpaceChain.cpp
+    src/Config.cpp
+    src/SteamTransport.cpp
 )
 
 # Executable Test Harness

@@ -21,12 +21,10 @@ bool Dx12Hook::s_isInstalled = false;
 typedef HRESULT(WINAPI* tPresent)(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
 typedef HRESULT(WINAPI* tPresent1)(IDXGISwapChain1* pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters);
 typedef HRESULT(WINAPI* tResizeBuffers)(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
-typedef void(WINAPI* tExecuteCommandLists)(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
 
 static tPresent oPresent = nullptr;
 static tPresent1 oPresent1 = nullptr;
 static tResizeBuffers oResizeBuffers = nullptr;
-static tExecuteCommandLists oExecuteCommandLists = nullptr;
 static WNDPROC oWndProc = nullptr;
 static HWND g_hGameWindow = nullptr;
 
@@ -38,6 +36,10 @@ static ID3D12GraphicsCommandList* g_d3d12CommandList = nullptr;
 static ID3D12CommandAllocator* g_d3d12CommandAllocators[4] = { nullptr };
 static ID3D12Resource* g_d3d12RenderTargetBuffers[4] = { nullptr };
 static D3D12_CPU_DESCRIPTOR_HANDLE g_d3d12RenderTargetHandles[4] = {};
+static ID3D12Fence* g_d3d12Fence = nullptr;
+static HANDLE g_hFenceEvent = nullptr;
+static UINT64 g_fenceValues[4] = { 0 };
+static UINT64 g_currentFenceValue = 0;
 static UINT g_bufferCount = 0;
 static bool g_dx12Initialized = false;
 
@@ -60,32 +62,18 @@ static LRESULT CALLBACK Hook_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 }
 
 static void CleanupRenderTargets() {
+    if (g_d3d12Fence && g_d3d12CommandQueue && g_hFenceEvent) {
+        g_currentFenceValue++;
+        g_d3d12CommandQueue->Signal(g_d3d12Fence, g_currentFenceValue);
+        g_d3d12Fence->SetEventOnCompletion(g_currentFenceValue, g_hFenceEvent);
+        WaitForSingleObject(g_hFenceEvent, 2000);
+    }
     for (UINT i = 0; i < 4; ++i) {
         if (g_d3d12RenderTargetBuffers[i]) {
             g_d3d12RenderTargetBuffers[i]->Release();
             g_d3d12RenderTargetBuffers[i] = nullptr;
         }
     }
-}
-
-static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
-    if (pCommandQueue) {
-        D3D12_COMMAND_QUEUE_DESC desc = pCommandQueue->GetDesc();
-        if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-            if (g_d3d12Device) {
-                ID3D12Device* pQueueDev = nullptr;
-                if (SUCCEEDED(pCommandQueue->GetDevice(IID_PPV_ARGS(&pQueueDev)))) {
-                    if (pQueueDev == g_d3d12Device) {
-                        g_d3d12CommandQueue = pCommandQueue;
-                    }
-                    pQueueDev->Release();
-                }
-            } else {
-                g_d3d12CommandQueue = pCommandQueue;
-            }
-        }
-    }
-    oExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
 }
 
 static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
@@ -112,6 +100,14 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         if (!pTarget) return false;
 
         step = 3;
+        // Wait until GPU has finished executing previous commands on this backbuffer allocator
+        if (g_d3d12Fence && g_fenceValues[backBufferIdx] != 0) {
+            if (g_d3d12Fence->GetCompletedValue() < g_fenceValues[backBufferIdx]) {
+                g_d3d12Fence->SetEventOnCompletion(g_fenceValues[backBufferIdx], g_hFenceEvent);
+                WaitForSingleObject(g_hFenceEvent, 1000);
+            }
+        }
+
         g_d3d12CommandAllocators[backBufferIdx]->Reset();
 
         step = 4;
@@ -152,6 +148,14 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         step = 11;
         ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandList };
         g_d3d12CommandQueue->ExecuteCommandLists(1, ppCommandLists);
+
+        // Signal fence so we know when GPU finishes this frame's work
+        if (g_d3d12Fence) {
+            g_currentFenceValue++;
+            g_d3d12CommandQueue->Signal(g_d3d12Fence, g_currentFenceValue);
+            g_fenceValues[backBufferIdx] = g_currentFenceValue;
+        }
+
         if (!s_firstRenderLogged) {
             s_firstRenderLogged = true;
             Logger::Log("[Dx12Hook] First ImGui frame rendered successfully to SwapChain!\n");
@@ -244,11 +248,21 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
             g_dx12Initialized = true;
             Logger::Log("[Dx12Hook] In-Game ImGui Overlay initialized successfully!\n");
         }
+
+        // 6. Create D3D12 Fence for Command Allocator GPU synchronization
+        if (FAILED(g_d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_d3d12Fence)))) {
+            Logger::Log("[Dx12Hook] Error: Failed to create D3D12 Fence!\n");
+        } else {
+            g_hFenceEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+            Logger::Log("[Dx12Hook] Created D3D12 Synchronization Fence & Event.\n");
+        }
     }
 
-    // Capture queue from SwapChain if not yet set by ExecuteCommandLists
+    // Capture queue from SwapChain directly
     if (!g_d3d12CommandQueue) {
-        pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&g_d3d12CommandQueue);
+        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&g_d3d12CommandQueue)) && g_d3d12CommandQueue) {
+            Logger::Log("[Dx12Hook] Presentation CommandQueue acquired from SwapChain: %p\n", (void*)g_d3d12CommandQueue);
+        }
     }
 
     static TransformInterpolator g_interpolator(0.05);
@@ -346,12 +360,7 @@ bool Dx12Hook::Install() {
 
     pFactory->CreateSwapChain(pDummyQueue, &scDesc, &pDummySwapChain);
 
-    // 1. Hook ExecuteCommandLists (VTable index 10) on CommandQueue
-    void** pQueueVMT = *reinterpret_cast<void***>(pDummyQueue);
-    void* executeCommandListsAddr = pQueueVMT[10];
-    MH_CreateHook(executeCommandListsAddr, (LPVOID)&Hook_ExecuteCommandLists, reinterpret_cast<LPVOID*>(&oExecuteCommandLists));
-
-    // 2. Hook Present (VTable index 8) and ResizeBuffers (VTable index 13)
+    // 1. Hook Present (VTable index 8) and ResizeBuffers (VTable index 13)
     void** pVMT = *reinterpret_cast<void***>(pDummySwapChain);
     void* presentAddress = pVMT[8];
     void* resizeBuffersAddress = pVMT[13];
@@ -359,7 +368,7 @@ bool Dx12Hook::Install() {
     MH_CreateHook(presentAddress, (LPVOID)&Hook_Present, reinterpret_cast<LPVOID*>(&oPresent));
     MH_CreateHook(resizeBuffersAddress, (LPVOID)&Hook_ResizeBuffers, reinterpret_cast<LPVOID*>(&oResizeBuffers));
 
-    // 3. Hook Present1 (VTable index 22) on IDXGISwapChain1
+    // 2. Hook Present1 (VTable index 22) on IDXGISwapChain1
     IDXGISwapChain1* pDummySwapChain1 = nullptr;
     if (SUCCEEDED(pDummySwapChain->QueryInterface(IID_PPV_ARGS(&pDummySwapChain1)))) {
         void** pVMT1 = *reinterpret_cast<void***>(pDummySwapChain1);

@@ -79,6 +79,35 @@ DWORD WINAPI ModMainThread(LPVOID lpParam) {
 
 } // namespace CrimsonCoop
 
+// Interop C API for CrimsonSwitch & external mod companions
+extern "C" {
+
+__declspec(dllexport) bool CrimsonCoop_IsMultiplayerActive() {
+    if (!CrimsonCoop::g_pActiveSession) return false;
+    return CrimsonCoop::g_pActiveSession->GetActivePlayerCount() > 1;
+}
+
+__declspec(dllexport) bool CrimsonCoop_IsCharacterOccupied(uint8_t charId) {
+    if (!CrimsonCoop::g_pActiveSession) return false;
+    CrimsonCoop::CharacterType ct = CrimsonCoop::CharacterType::None;
+    if (charId == 1) ct = CrimsonCoop::CharacterType::Kliff;
+    else if (charId == 2) ct = CrimsonCoop::CharacterType::Damiane;
+    else if (charId == 3) ct = CrimsonCoop::CharacterType::Oongka;
+    return CrimsonCoop::g_pActiveSession->IsCharacterInUse(ct);
+}
+
+__declspec(dllexport) bool CrimsonCoop_RequestCharacterSwitch(uint8_t charId) {
+    if (!CrimsonCoop::g_pActiveSession) return false;
+    CrimsonCoop::CharacterType ct = CrimsonCoop::CharacterType::None;
+    if (charId == 1) ct = CrimsonCoop::CharacterType::Kliff;
+    else if (charId == 2) ct = CrimsonCoop::CharacterType::Damiane;
+    else if (charId == 3) ct = CrimsonCoop::CharacterType::Oongka;
+    std::string reason;
+    return CrimsonCoop::g_pActiveSession->SwitchLocalCharacter(ct, reason);
+}
+
+} // extern "C"
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     (void)lpReserved;
     switch (ul_reason_for_call) {

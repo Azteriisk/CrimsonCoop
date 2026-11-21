@@ -57,6 +57,11 @@
 ### 10. Standalone Diagnostic & MCP Inspector (`CrimsonCoopTool.exe`)
 * Scriptable CLI tool inspecting running game status, colorized `CrimsonCoop.log` streams, and `.cdcoop` save containers.
 
+### 11. Companion Mod Interoperability (`CrimsonSwitch`)
+* Fully integrated with companion mod [CrimsonSwitch](https://github.com/Azteriisk/CrimsonSwitch).
+* `CrimsonCoopLauncher.exe` auto-detects `CrimsonSwitch.dll` and injects both mods into RAM simultaneously.
+* Features real-time character arbitration: `CrimsonSwitch` respects active co-op sessions, automatically preventing players from switching to a hero currently piloted by a peer while seamlessly powering 1-key swaps into the 3rd reserve hero in 2-player Duo sessions.
+
 ---
 
 ## Project Structure
@@ -122,14 +127,15 @@ cmake --build build
 .\build\cd_coop_harness.exe
 ```
 
-### 2. Test the Standalone Launcher
+### 2. Test the Standalone Launcher & Hot-Attach
 Run the zero-footprint launcher to verify executable resolution and memory injection readiness:
 
 ```powershell
 .\build\CrimsonCoopLauncher.exe
 ```
-* The launcher checks your Steam installation registry and local directories for `CrimsonDesert.exe`.
-* If found, it starts the process suspended, injects `CrimsonCoop.dll` into RAM, and resumes execution.
+* **Hot-Attach Mode (Recommended):** Launch *Crimson Desert* directly via Steam as normal. Once in the main menu or in-game, double-click `CrimsonCoopLauncher.exe`. It detects the running process and injects `CrimsonCoop.dll` (and `CrimsonSwitch.dll` if present) in ~100ms with zero loading delay.
+* **Clean Launch Mode:** Double-click `CrimsonCoopLauncher.exe` while the game is closed. It will locate `CrimsonDesert.exe` across your Steam drives (including `D:\SteamLibrary`), launch the game, wait 2 seconds for DirectX 12 runtime initialization, and inject the mod suite into RAM.
+* In either mode, base game files on disk are **never modified** and achievements remain intact when launching vanilla.
 
 ### 3. Customize `CrimsonCoop.ini`
 Edit `CrimsonCoop.ini` to test different runtime preferences:

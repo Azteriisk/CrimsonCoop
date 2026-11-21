@@ -11,8 +11,9 @@ namespace fs = std::filesystem;
 
 namespace CrimsonLauncher {
 
-const std::wstring GAME_EXE_NAME = L"CrimsonDesert.exe";
-const std::wstring MOD_DLL_NAME  = L"CrimsonCoop.dll";
+const std::wstring GAME_EXE_NAME   = L"CrimsonDesert.exe";
+const std::wstring MOD_DLL_NAME    = L"CrimsonCoop.dll";
+const std::wstring SWITCH_DLL_NAME = L"CrimsonSwitch.dll";
 
 // Helper to clean quotes and whitespace from paths
 std::wstring CleanPath(std::wstring path) {
@@ -153,6 +154,24 @@ std::wstring FindModDll() {
     return L"";
 }
 
+// Locate the companion CrimsonSwitch DLL if installed
+std::wstring FindSwitchDll() {
+    fs::path current = fs::current_path();
+    std::vector<fs::path> dllSearchPaths = {
+        current / SWITCH_DLL_NAME,
+        current / L"build" / SWITCH_DLL_NAME,
+        current.parent_path() / L"CrimsonSwitch" / L"build" / SWITCH_DLL_NAME,
+        current.parent_path() / L"CrimsonSwitch" / SWITCH_DLL_NAME
+    };
+
+    for (const auto& path : dllSearchPaths) {
+        if (fs::exists(path)) {
+            return fs::canonical(path).wstring();
+        }
+    }
+    return L"";
+}
+
 // Inject DLL into the Target Process Memory with exit code verification
 bool InjectDll(HANDLE hProcess, const std::wstring& dllPath) {
     size_t pathSize = (dllPath.length() + 1) * sizeof(wchar_t);
@@ -241,11 +260,23 @@ int main() {
             return 1;
         }
 
-        if (CrimsonLauncher::InjectDll(hProcess, modDllPath)) {
+        bool coopInjected = CrimsonLauncher::InjectDll(hProcess, modDllPath);
+        std::wstring switchDllPath = CrimsonLauncher::FindSwitchDll();
+        bool switchInjected = false;
+        if (!switchDllPath.empty()) {
+            std::wcout << L"[Launcher] Found companion CrimsonSwitch mod: " << switchDllPath << L"\n";
+            std::cout << "[Launcher] Attaching CrimsonSwitch.dll into running game session...\n";
+            switchInjected = CrimsonLauncher::InjectDll(hProcess, switchDllPath);
+        }
+
+        if (coopInjected) {
             std::cout << "\n=========================================================\n";
             std::cout << "  Co-Op Mod Successfully Attached to Running Game!       \n";
             std::cout << "  -> Press F2 or INSERT in-game to toggle the Co-Op HUD. \n";
             std::cout << "  -> Save sandbox active: Slot0.sav is untouched.        \n";
+            if (switchInjected) {
+                std::cout << "  -> CrimsonSwitch active: 3-Mercenary instant unlock.   \n";
+            }
             std::cout << "=========================================================\n";
         }
         CloseHandle(hProcess);
@@ -314,12 +345,25 @@ int main() {
 
     // 5. Inject Mod DLL purely into RAM for this session
     std::cout << "[Launcher] Injecting CrimsonCoop.dll into game memory...\n";
-    if (CrimsonLauncher::InjectDll(pi.hProcess, modDllPath)) {
+    bool coopInjected = CrimsonLauncher::InjectDll(pi.hProcess, modDllPath);
+    if (coopInjected) {
         std::cout << "  -> [SUCCESS] Co-Op mod injected into RAM!\n";
         std::cout << "  -> Save sandbox active: Single-player files untouched.\n";
         std::cout << "  -> Greymane party HUD and P2P sockets ready.\n";
     } else {
         std::wcerr << L"  -> [FAILED] DLL Injection failed. Game will start vanilla.\n";
+    }
+
+    std::wstring switchDllPath = CrimsonLauncher::FindSwitchDll();
+    bool switchInjected = false;
+    if (!switchDllPath.empty()) {
+        std::wcout << L"[Launcher] Found companion CrimsonSwitch mod: " << switchDllPath << L"\n";
+        std::cout << "[Launcher] Injecting CrimsonSwitch.dll into game memory...\n";
+        switchInjected = CrimsonLauncher::InjectDll(pi.hProcess, switchDllPath);
+        if (switchInjected) {
+            std::cout << "  -> [SUCCESS] CrimsonSwitch mod injected into RAM!\n";
+            std::cout << "  -> 3-Mercenary instant radial unlocked.\n";
+        }
     }
 
     CloseHandle(pi.hThread);
@@ -329,6 +373,9 @@ int main() {
     std::cout << "  Game Launched Successfully in Co-Op Mode!              \n";
     std::cout << "  -> Press F2 or INSERT in-game to toggle the Co-Op HUD. \n";
     std::cout << "  -> Save sandbox active: Slot0.sav is untouched.        \n";
+    if (switchInjected) {
+        std::cout << "  -> CrimsonSwitch active: 3-Mercenary instant unlock.   \n";
+    }
     std::cout << "  (To play vanilla single-player, launch via Steam)      \n";
     std::cout << "=========================================================\n";
 

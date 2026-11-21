@@ -1,7 +1,9 @@
 #include "SteamTransport.hpp"
+#include "RealSteamworks.hpp"
 #include "GuiOverlay.hpp"
 #include "CoopSaveManager.hpp"
 #include <iostream>
+#include <unordered_map>
 
 namespace CrimsonCoop {
 
@@ -11,6 +13,9 @@ PlayerId SteamTransport::s_localSteamId = 0;
 uint64_t SteamTransport::s_activeLobbyId = 0;
 bool SteamTransport::s_isHost = false;
 
+static HSteamListenSocket s_hListenSocket = k_HSteamListenSocket_Invalid;
+static std::unordered_map<PlayerId, HSteamNetConnection> s_activePeerConnections;
+
 std::mutex SteamTransport::s_queueMutex;
 std::queue<InboundPacket> SteamTransport::s_mockPacketQueue;
 
@@ -18,18 +23,36 @@ std::function<void(uint8_t)> SteamTransport::s_onConflictCallback = nullptr;
 std::function<void(PlayerId, CharacterType)> SteamTransport::s_onSwapRequestCallback = nullptr;
 
 bool SteamTransport::Initialize(PlayerId localSteamId, bool isHost) {
-    s_localSteamId = localSteamId;
     s_isHost = isHost;
+
+    // 1. Try dynamically binding to real steam_api64.dll in the game's address space
+    if (RealSteamworks::Load()) {
+        uint64_t realSteamId = RealSteamworks::GetLocalSteamID();
+        if (realSteamId != 0) {
+            s_localSteamId = realSteamId;
+        } else {
+            s_localSteamId = localSteamId;
+        }
+        std::cout << "[SteamTransport] Real Steamworks driver engaged! Authenticated SteamID: " << s_localSteamId << "\n";
+    } else {
+        s_localSteamId = localSteamId;
+        std::cout << "[SteamTransport] Running in offline / local development mode.\n";
+    }
+
     s_state = isHost ? ConnectionState::HostLobbyActive : ConnectionState::Connected;
     s_isInitialized = true;
-
-    std::cout << "[SteamTransport] Initialized transport for SteamID: " 
-              << localSteamId << " (" << (isHost ? "Host" : "Peer") << ")\n";
     return true;
 }
 
 void SteamTransport::Shutdown() {
     LeaveLobby();
+
+    // Close all real P2P connections
+    for (auto& [peerId, hConn] : s_activePeerConnections) {
+        RealSteamworks::CloseConnection(hConn, 0, "Session closed");
+    }
+    s_activePeerConnections.clear();
+
     s_isInitialized = false;
     s_state = ConnectionState::Disconnected;
     std::cout << "[SteamTransport] Transport shut down.\n";
@@ -38,7 +61,14 @@ void SteamTransport::Shutdown() {
 bool SteamTransport::CreateCoopLobby(uint32_t maxMembers) {
     (void)maxMembers;
     s_isHost = true;
-    s_activeLobbyId = 1097752410ULL; // Simulated Steam Lobby ID
+
+    // Real Steam Networking: open a live P2P listen socket on Valve's Relay Network (SDR)
+    if (RealSteamworks::IsLoaded()) {
+        s_hListenSocket = RealSteamworks::CreateListenSocketP2P(0);
+        std::cout << "[SteamTransport] Live P2P Listen Socket created on Valve Relay Network.\n";
+    }
+
+    s_activeLobbyId = 1097752410ULL; // Simulated/Real Steam Lobby ID
     s_state = ConnectionState::HostLobbyActive;
     std::cout << "[SteamTransport] Created Steam Co-Op Lobby: " << s_activeLobbyId << " (Max 3 Greymanes)\n";
     return true;
@@ -48,6 +78,16 @@ bool SteamTransport::JoinCoopLobby(uint64_t lobbyId) {
     s_activeLobbyId = lobbyId;
     s_isHost = false;
     s_state = ConnectionState::Connecting;
+
+    // Real Steam Networking: connect directly to Host via Valve Relay
+    if (RealSteamworks::IsLoaded()) {
+        HSteamNetConnection hConn = RealSteamworks::ConnectP2P(lobbyId, 0);
+        if (hConn != k_HSteamNetConnection_Invalid) {
+            s_activePeerConnections[lobbyId] = hConn;
+            std::cout << "[SteamTransport] Connected to Host via Valve Relay Network.\n";
+        }
+    }
+
     std::cout << "[SteamTransport] Joining Steam Lobby: " << lobbyId << "...\n";
     return true;
 }
@@ -61,20 +101,32 @@ void SteamTransport::LeaveLobby() {
 }
 
 bool SteamTransport::SendPacket(PlayerId targetPeer, const void* data, size_t size, bool reliable) {
-    (void)reliable;
     if (!s_isInitialized || size < sizeof(PacketHeader)) return false;
 
-    // In a live Steam build, calls SteamNetworkingSockets()->SendMessageToConnection()
-    // For local mock verification, inject into queue
+    // 1. Real Steamworks Transmission
+    if (RealSteamworks::IsLoaded()) {
+        auto it = s_activePeerConnections.find(targetPeer);
+        if (it != s_activePeerConnections.end()) {
+            return RealSteamworks::SendMessage(it->second, data, static_cast<uint32_t>(size), reliable);
+        }
+    }
+
+    // 2. Offline / Loopback Fallback
     InjectMockPacket(s_localSteamId, data, size);
-    (void)targetPeer;
     return true;
 }
 
 bool SteamTransport::BroadcastPacket(const void* data, size_t size, bool reliable, PlayerId excludePeer) {
-    (void)reliable;
-    (void)excludePeer;
     if (!s_isInitialized || size < sizeof(PacketHeader)) return false;
+
+    if (RealSteamworks::IsLoaded()) {
+        for (const auto& [peerId, hConn] : s_activePeerConnections) {
+            if (peerId != excludePeer) {
+                RealSteamworks::SendMessage(hConn, data, static_cast<uint32_t>(size), reliable);
+            }
+        }
+        return true;
+    }
 
     InjectMockPacket(s_localSteamId, data, size);
     return true;
@@ -92,6 +144,27 @@ void SteamTransport::InjectMockPacket(PlayerId senderId, const void* data, size_
 void SteamTransport::PollAndDispatch(SessionManager* pSession, TransformInterpolator* pInterpolator) {
     if (!s_isInitialized) return;
 
+    // 1. Pump real Steam callbacks
+    if (RealSteamworks::IsLoaded()) {
+        RealSteamworks::RunCallbacks();
+
+        // Read real messages from active Steam socket connections
+        for (const auto& [peerId, hConn] : s_activePeerConnections) {
+            SteamNetworkingMessage_t* messages[32];
+            int numMsgs = RealSteamworks::ReceiveMessages(hConn, messages, 32);
+            for (int i = 0; i < numMsgs; ++i) {
+                InboundPacket pkt;
+                pkt.senderSteamId = peerId;
+                pkt.payload.resize(messages[i]->m_cbSize);
+                memcpy(pkt.payload.data(), messages[i]->m_pData, messages[i]->m_cbSize);
+                messages[i]->Release();
+
+                DispatchPacket(pkt, pSession, pInterpolator);
+            }
+        }
+    }
+
+    // 2. Process any queued packets
     std::queue<InboundPacket> packetsToProcess;
     {
         std::lock_guard<std::mutex> lock(s_queueMutex);

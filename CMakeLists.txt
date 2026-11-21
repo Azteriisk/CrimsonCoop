@@ -73,6 +73,7 @@ set(CORE_SOURCES
     src/PatternScan.cpp
     src/BlackSpaceChain.cpp
     src/Config.cpp
+    src/RealSteamworks.cpp
     src/SteamTransport.cpp
 )
 

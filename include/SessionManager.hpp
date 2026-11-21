@@ -3,6 +3,7 @@
 #include "Common.hpp"
 #include "NetworkPackets.hpp"
 #include <unordered_map>
+#include <vector>
 #include <optional>
 #include <string>
 
@@ -28,16 +29,23 @@ public:
     // In-game Switch Guard: Intercepts single-player radial menu / hotkey attempts
     bool CanLocalPlayerSwitchTo(PlayerId localSteamId, CharacterType targetCharacter, std::string& outReason) const;
 
-    // Voluntary Role Swap: Allows two players to swap characters mid-game
+    // Switch to an unpiloted/reserve character (Essential for 2-player Duo sessions!)
+    bool SwitchToUnoccupied(PlayerId localSteamId, CharacterType targetCharacter, std::string& outReason);
+
+    // Voluntary Role Swap: Allows two active players to trade characters mid-game
     bool InitiateSwapRequest(PlayerId requesterId, PlayerId targetId);
     bool ResolveSwapResponse(PlayerId targetId, bool accepted);
 
     // Roster query helpers
     bool IsCharacterInUse(CharacterType character) const;
     uint8_t GetAvailableCharacterMask() const;
+    std::vector<CharacterType> GetUnoccupiedCharacters() const;
     std::optional<CharacterType> GetFirstAvailableCharacter() const;
     std::optional<PlayerId> GetPlayerUsingCharacter(CharacterType character) const;
     size_t GetActivePlayerCount() const;
+
+    // 2-Player Duo helper: true when exactly 2 players are connected
+    bool IsDuoSession() const { return m_roster.size() == 2; }
 
     PlayerId GetHostSteamId() const { return m_hostSteamId; }
     const std::unordered_map<PlayerId, PlayerSessionInfo>& GetRoster() const { return m_roster; }

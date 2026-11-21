@@ -131,7 +131,16 @@ void GuiOverlay::DrawPartyHUD(SessionManager* pSession) {
             ImGui::PopID();
         }
 
-        if (roster.size() < MAX_PLAYERS) {
+        // 2-Player Duo Session Indicator & Reserve Slot
+        if (pSession->IsDuoSession()) {
+            auto reserves = pSession->GetUnoccupiedCharacters();
+            if (!reserves.empty()) {
+                ImGui::Separator();
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 0.4f, 1.0f), "[2P Duo Mode Active]");
+                ImGui::TextDisabled("Reserve Character: %s", CharacterToString(reserves[0]));
+                ImGui::TextWrapped("Either player can swap into %s anytime using the radial wheel.", CharacterToString(reserves[0]));
+            }
+        } else if (roster.size() < MAX_PLAYERS) {
             ImGui::TextDisabled("Waiting for %d Greymane companion(s)...", static_cast<int>(MAX_PLAYERS - roster.size()));
         }
     }

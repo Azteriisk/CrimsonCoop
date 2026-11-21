@@ -200,6 +200,33 @@ int main() {
     SteamTransport::PollAndDispatch(&session, &interpolator);
     std::cout << "  -> Dispatched Inbound TransformSync Packet successfully!\n";
 
+    // 11. 2-Player Duo Dynamic Reserve Character Swapping Test
+    std::cout << "[2-Player Duo System] Testing dynamic 2-player session with reserve character...\n";
+    SessionManager duoSession(hostSteamId, CharacterType::Kliff, "Host_Player");
+    duoSession.HandleJoinRequest(client2SteamId, CharacterType::Damiane, "Player_Alex");
+
+    std::cout << "  -> Session Type: " << (duoSession.IsDuoSession() ? "2-Player Duo (Active)" : "Standard") << "\n";
+    auto unoccupied = duoSession.GetUnoccupiedCharacters();
+    std::cout << "  -> Unoccupied Reserve Characters: " << unoccupied.size() << " (";
+    for (auto c : unoccupied) std::cout << CharacterToString(c) << " ";
+    std::cout << ")\n";
+
+    // Host swaps to unoccupied reserve character (Oongka)
+    std::string switchReason;
+    if (duoSession.SwitchToUnoccupied(hostSteamId, CharacterType::Oongka, switchReason)) {
+        std::cout << "  -> [DUO SWAP] Host successfully switched into reserve character: Oongka!\n";
+    }
+
+    // Client 2 attempts to switch to Oongka (now taken by Host)
+    if (!duoSession.CanLocalPlayerSwitchTo(client2SteamId, CharacterType::Oongka, switchReason)) {
+        std::cout << "  -> [DUO GUARD] Client 2 blocked from switching to Oongka (" << switchReason << ")\n";
+    }
+
+    // Client 2 switches to newly-vacated reserve character (Kliff)
+    if (duoSession.SwitchToUnoccupied(client2SteamId, CharacterType::Kliff, switchReason)) {
+        std::cout << "  -> [DUO SWAP] Client 2 successfully switched into newly-freed reserve character: Kliff!\n";
+    }
+
     std::cout << "\n=========================================================\n";
     std::cout << "  All Co-op Core Subsystems Verified Successfully!       \n";
     std::cout << "=========================================================\n";

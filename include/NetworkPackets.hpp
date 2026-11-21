@@ -11,7 +11,8 @@ enum class PacketType : uint8_t {
     CharacterSwapAck   = 0x04,
     TransformSync      = 0x05,
     ActionSync         = 0x06,
-    SaveCheckpointSync = 0x07
+    SaveCheckpointSync = 0x07,
+    ReserveSwitchSync  = 0x08
 };
 
 enum class HandshakeStatus : uint8_t {
@@ -77,6 +78,14 @@ struct PktActionSync {
     uint32_t      actionId;        // Animation/skill ID in BlackSpace Engine
     float         playbackSpeed;
     int32_t       targetEntityUid; // e.g., grabbed enemy UID for Oongka or lock-on target
+};
+
+// Reserve Character Switch: Broadcast when a player in a 2-player session swaps into the reserve character
+struct PktReserveSwitchSync {
+    PacketHeader  header;
+    PlayerId      playerSteamId;
+    CharacterType oldCharacter;
+    CharacterType newCharacter;
 };
 
 // Save Checkpoint Packet: Host orders all clients to write local co-op save

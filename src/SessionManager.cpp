@@ -31,6 +31,33 @@ uint8_t SessionManager::GetAvailableCharacterMask() const {
     return mask;
 }
 
+std::vector<CharacterType> SessionManager::GetUnoccupiedCharacters() const {
+    std::vector<CharacterType> unoccupied;
+    if (!IsCharacterInUse(CharacterType::Kliff))   unoccupied.push_back(CharacterType::Kliff);
+    if (!IsCharacterInUse(CharacterType::Damiane)) unoccupied.push_back(CharacterType::Damiane);
+    if (!IsCharacterInUse(CharacterType::Oongka))  unoccupied.push_back(CharacterType::Oongka);
+    return unoccupied;
+}
+
+bool SessionManager::SwitchToUnoccupied(PlayerId localSteamId, CharacterType targetCharacter, std::string& outReason) {
+    if (!CanLocalPlayerSwitchTo(localSteamId, targetCharacter, outReason)) {
+        return false;
+    }
+
+    auto it = m_roster.find(localSteamId);
+    if (it == m_roster.end()) {
+        outReason = "Player not in session.";
+        return false;
+    }
+
+    CharacterType oldChar = it->second.character;
+    it->second.character = targetCharacter;
+    std::cout << "[SessionManager] " << it->second.playerName << " switched from " 
+              << CharacterToString(oldChar) << " to reserve character " 
+              << CharacterToString(targetCharacter) << ".\n";
+    return true;
+}
+
 std::optional<CharacterType> SessionManager::GetFirstAvailableCharacter() const {
     if (!IsCharacterInUse(CharacterType::Kliff))   return CharacterType::Kliff;
     if (!IsCharacterInUse(CharacterType::Damiane)) return CharacterType::Damiane;

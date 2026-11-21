@@ -44,7 +44,7 @@ static bool g_dx12Initialized = false;
 SessionManager* g_pActiveSession = nullptr;
 
 static LRESULT CALLBACK Hook_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    if (uMsg == WM_KEYDOWN && (wParam == VK_INSERT || wParam == VK_F2)) {
+    if (uMsg == WM_KEYDOWN && !(lParam & (1 << 30)) && (wParam == VK_INSERT || wParam == VK_F2)) {
         GuiOverlay::ToggleVisible();
         Logger::Log("[Dx12Hook] Overlay toggled. Visible: %d\n", GuiOverlay::IsVisible());
         return 0;
@@ -69,11 +69,20 @@ static void CleanupRenderTargets() {
 }
 
 static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
-    if (!g_d3d12CommandQueue && pCommandQueue) {
+    if (pCommandQueue) {
         D3D12_COMMAND_QUEUE_DESC desc = pCommandQueue->GetDesc();
         if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-            g_d3d12CommandQueue = pCommandQueue;
-            Logger::Log("[Dx12Hook] Captured Direct Command Queue: %p\n", (void*)g_d3d12CommandQueue);
+            if (g_d3d12Device) {
+                ID3D12Device* pQueueDev = nullptr;
+                if (SUCCEEDED(pCommandQueue->GetDevice(IID_PPV_ARGS(&pQueueDev)))) {
+                    if (pQueueDev == g_d3d12Device) {
+                        g_d3d12CommandQueue = pCommandQueue;
+                    }
+                    pQueueDev->Release();
+                }
+            } else {
+                g_d3d12CommandQueue = pCommandQueue;
+            }
         }
     }
     oExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
@@ -81,14 +90,17 @@ static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, U
 
 static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
     static bool s_firstRenderLogged = false;
+    int step = 0;
     __try {
         if (!g_dx12Initialized || !g_d3d12CommandQueue) return false;
 
+        step = 1;
         IDXGISwapChain3* pSwapChain3 = nullptr;
         if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&pSwapChain3))) || !pSwapChain3) {
             return false;
         }
 
+        step = 2;
         UINT backBufferIdx = pSwapChain3->GetCurrentBackBufferIndex();
         pSwapChain3->Release();
 
@@ -99,8 +111,10 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         ID3D12Resource* pTarget = g_d3d12RenderTargetBuffers[backBufferIdx];
         if (!pTarget) return false;
 
+        step = 3;
         g_d3d12CommandAllocators[backBufferIdx]->Reset();
 
+        step = 4;
         D3D12_RESOURCE_BARRIER barrier = {};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
@@ -109,24 +123,33 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
 
+        step = 5;
         g_d3d12CommandList->Reset(g_d3d12CommandAllocators[backBufferIdx], nullptr);
         g_d3d12CommandList->ResourceBarrier(1, &barrier);
         g_d3d12CommandList->OMSetRenderTargets(1, &g_d3d12RenderTargetHandles[backBufferIdx], FALSE, nullptr);
 
+        step = 6;
         ID3D12DescriptorHeap* heaps[] = { g_d3d12SrvHeap };
         g_d3d12CommandList->SetDescriptorHeaps(1, heaps);
 
-        // Render Dear ImGui frame
+        step = 7;
         GuiOverlay::Render(g_pActiveSession);
-        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_d3d12CommandList);
 
-        // Transition backbuffer back to PRESENT
+        step = 8;
+        ImDrawData* drawData = ImGui::GetDrawData();
+        if (drawData) {
+            ImGui_ImplDX12_RenderDrawData(drawData, g_d3d12CommandList);
+        }
+
+        step = 9;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
         g_d3d12CommandList->ResourceBarrier(1, &barrier);
 
+        step = 10;
         g_d3d12CommandList->Close();
 
+        step = 11;
         ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandList };
         g_d3d12CommandQueue->ExecuteCommandLists(1, ppCommandLists);
         if (!s_firstRenderLogged) {
@@ -135,10 +158,10 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
-        static bool s_exceptionLogged = false;
-        if (!s_exceptionLogged) {
-            s_exceptionLogged = true;
-            Logger::Log("[Dx12Hook] Exception caught in SafeRenderImGui! Skipping frame.\n");
+        static int s_errCount = 0;
+        if (s_errCount++ < 5) {
+            Logger::Log("[Dx12Hook] Exception 0x%08X caught at step %d in SafeRenderImGui! (Queue: %p, Device: %p)\n",
+                        GetExceptionCode(), step, (void*)g_d3d12CommandQueue, (void*)g_d3d12Device);
         }
         return false;
     }

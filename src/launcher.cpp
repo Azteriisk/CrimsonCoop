@@ -194,13 +194,39 @@ std::wstring FindSwitchDll() {
     return L"";
 }
 
+// Acquire SeDebugPrivilege to ensure memory operations succeed across integrity levels
+bool EnableDebugPrivilege() {
+    HANDLE hToken = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) {
+        return false;
+    }
+    TOKEN_PRIVILEGES tp{};
+    LUID luid{};
+    if (!LookupPrivilegeValueW(nullptr, L"SeDebugPrivilege", &luid)) {
+        CloseHandle(hToken);
+        return false;
+    }
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Luid = luid;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    AdjustTokenPrivileges(hToken, FALSE, &tp, sizeof(TOKEN_PRIVILEGES), nullptr, nullptr);
+    CloseHandle(hToken);
+    return true;
+}
+
 // Inject DLL into the Target Process Memory with exit code verification
 bool InjectDll(HANDLE hProcess, const std::wstring& dllPath) {
     size_t pathSize = (dllPath.length() + 1) * sizeof(wchar_t);
 
     LPVOID pRemoteMem = VirtualAllocEx(hProcess, nullptr, pathSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!pRemoteMem) {
-        std::wcerr << L"[Error] Failed to allocate memory in game process (Code: " << GetLastError() << L")\n";
+        DWORD err = GetLastError();
+        std::wcerr << L"[Error] Failed to allocate memory in game process (Code: " << err << L")\n";
+        if (err == ERROR_ACCESS_DENIED) {
+            std::wcerr << L"Hint: Try running CrimsonCoopLauncher as Administrator (Right-click -> Run as administrator).\n";
+        } else if (err == ERROR_INVALID_HANDLE) {
+            std::wcerr << L"Hint: Game process handle is invalid or the process already exited.\n";
+        }
         return false;
     }
 
@@ -251,6 +277,8 @@ bool InjectDll(HANDLE hProcess, const std::wstring& dllPath) {
 } // namespace CrimsonLauncher
 
 int main() {
+    CrimsonLauncher::EnableDebugPrivilege();
+
     std::cout << "=========================================================\n";
     std::cout << "   Crimson Desert 3-Player Co-Op Standalone Launcher    \n";
     std::cout << "   Trio: Kliff, Damiane, Oongka                          \n";
@@ -365,12 +393,43 @@ int main() {
     std::cout << "[Launcher] Game process started (PID: " << pi.dwProcessId << ").\n";
     std::cout << "[Launcher] Initializing BlackSpace engine runtime...\n";
 
-    // Allow the game 2 seconds to initialize ntdll/kernel32/d3d12 before injection
-    Sleep(2000);
+    // Allow the game 2.5 seconds to initialize
+    Sleep(2500);
+
+    HANDLE hTargetProcess = pi.hProcess;
+    bool reopened = false;
+    DWORD exitCode = 0;
+    if (GetExitCodeProcess(pi.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
+        std::cout << "[Launcher] Steam client handoff detected (PID " << pi.dwProcessId << " exited with code " << exitCode << ").\n";
+        std::cout << "[Launcher] Waiting for main game process to spawn under Steam...\n";
+
+        hTargetProcess = nullptr;
+        for (int i = 0; i < 30; ++i) {
+            Sleep(500);
+            DWORD activePid = CrimsonLauncher::FindProcessId(CrimsonLauncher::GAME_EXE_NAME);
+            if (activePid != 0 && activePid != pi.dwProcessId) {
+                hTargetProcess = OpenProcess(PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE | PROCESS_VM_READ, FALSE, activePid);
+                if (hTargetProcess) {
+                    std::wcout << L"[Launcher] Attached to active Crimson Desert process (PID: " << activePid << L")!\n";
+                    reopened = true;
+                    Sleep(2000);
+                    break;
+                }
+            }
+        }
+
+        if (!hTargetProcess) {
+            std::wcerr << L"[Error] Could not locate active game process after Steam handoff.\n";
+            std::cout << "Tip: Launch Crimson Desert directly through Steam, then double-click CrimsonCoopLauncher.\n";
+            std::cout << "\nPress ENTER to exit...";
+            std::cin.get();
+            return 1;
+        }
+    }
 
     // 5. Inject Mod DLL purely into RAM for this session
     std::cout << "[Launcher] Injecting CrimsonCoop.dll into game memory...\n";
-    bool coopInjected = CrimsonLauncher::InjectDll(pi.hProcess, modDllPath);
+    bool coopInjected = CrimsonLauncher::InjectDll(hTargetProcess, modDllPath);
     if (coopInjected) {
         std::cout << "  -> [SUCCESS] Co-Op mod injected into RAM!\n";
         std::cout << "  -> Save sandbox active: Single-player files untouched.\n";
@@ -385,7 +444,7 @@ int main() {
     if (!switchDllPath.empty()) {
         std::wcout << L"[Launcher] Found companion CrimsonSwitch mod: " << switchDllPath << L"\n";
         std::cout << "[Launcher] Injecting CrimsonSwitch.dll into game memory...\n";
-        switchInjected = CrimsonLauncher::InjectDll(pi.hProcess, switchDllPath);
+        switchInjected = CrimsonLauncher::InjectDll(hTargetProcess, switchDllPath);
         if (switchInjected) {
             std::cout << "  -> [SUCCESS] CrimsonSwitch mod injected into RAM!\n";
             std::cout << "  -> 3-Mercenary instant radial unlocked.\n";
@@ -394,6 +453,9 @@ int main() {
         std::cout << "[Launcher] Companion CrimsonSwitch mod disabled via CrimsonCoop.ini.\n";
     }
 
+    if (reopened && hTargetProcess) {
+        CloseHandle(hTargetProcess);
+    }
     CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
 

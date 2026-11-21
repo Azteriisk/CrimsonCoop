@@ -72,18 +72,9 @@ static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, U
             ID3D12Device* pQueueDev = nullptr;
             if (SUCCEEDED(pCommandQueue->GetDevice(IID_PPV_ARGS(&pQueueDev)))) {
                 if (pQueueDev == g_d3d12Device) {
-                    DWORD curTid = GetCurrentThreadId();
-                    // Lock presentation CommandQueue to the thread calling Present
-                    if (g_presentThreadId != 0 && curTid == g_presentThreadId) {
-                        if (g_d3d12CommandQueue != pCommandQueue) {
-                            g_d3d12CommandQueue = pCommandQueue;
-                            Logger::Log("[Dx12Hook] Acquired DIRECT Presentation CommandQueue from Present Thread (TID %lu): %p\n",
-                                        curTid, (void*)g_d3d12CommandQueue);
-                        }
-                    } else if (g_d3d12CommandQueue == nullptr) {
+                    if (g_d3d12CommandQueue == nullptr) {
                         g_d3d12CommandQueue = pCommandQueue;
-                        Logger::Log("[Dx12Hook] Initial DIRECT CommandQueue captured (TID %lu): %p\n",
-                                    curTid, (void*)g_d3d12CommandQueue);
+                        Logger::Log("[Dx12Hook] Captured primary DIRECT Presentation CommandQueue: %p\n", (void*)g_d3d12CommandQueue);
                     }
                 }
                 pQueueDev->Release();
@@ -295,18 +286,6 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
             Logger::Log("[Dx12Hook] Created D3D12 Synchronization Fence & Event.\n");
         }
     }
-
-    // Fail-safe edge-detected hotkey toggle for F2 / Insert on the render thread
-    static bool s_f2Prev = false;
-    static bool s_insPrev = false;
-    bool f2Down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
-    bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
-    if ((f2Down && !s_f2Prev) || (insDown && !s_insPrev)) {
-        GuiOverlay::ToggleVisible();
-        Logger::Log("[Dx12Hook] Overlay toggled via hotkey. Visible: %d\n", GuiOverlay::IsVisible());
-    }
-    s_f2Prev = f2Down;
-    s_insPrev = insDown;
 
     static TransformInterpolator g_interpolator(0.05);
 

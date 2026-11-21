@@ -1,4 +1,7 @@
 #include "GuiOverlay.hpp"
+#include "ActionCombatSync.hpp"
+#include "VisualEquipSync.hpp"
+#include "RemoteProxyManager.hpp"
 #include "Logger.hpp"
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -235,14 +238,57 @@ void GuiOverlay::DrawPartyHUD(SessionManager* pSession) {
             }
         }
 
-        // Section 4: Matchmaking & Steam Controls
+        // Section 4: Combat Actions & Animation Replication
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Combat Actions (Sync):");
+        CharacterType localHero = pSession ? pSession->GetLocalCharacter() : CharacterType::Kliff;
+
+        if (ImGui::Button("Light Attack [LMB]", ImVec2(145.0f, 24.0f))) {
+            ActionCombatSync::TriggerLocalAction(localHero, CombatActions::LIGHT_ATTACK_1);
+            ShowToast("Replicating Light Attack combo...");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Heavy Attack [RMB]", ImVec2(145.0f, 24.0f))) {
+            ActionCombatSync::TriggerLocalAction(localHero, CombatActions::HEAVY_ATTACK_SWING);
+            ShowToast("Replicating Heavy Attack charge...");
+        }
+
+        if (ImGui::Button("Dodge Roll [Space]", ImVec2(145.0f, 24.0f))) {
+            ActionCombatSync::TriggerLocalAction(localHero, CombatActions::DODGE_ROLL);
+            ShowToast("Replicating Dodge Roll...");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Parry Counter [Q]", ImVec2(145.0f, 24.0f))) {
+            ActionCombatSync::TriggerLocalAction(localHero, CombatActions::PARRY_COUNTER);
+            ShowToast("Replicating Parry Counter!");
+        }
+
+        if (ImGui::Button("Hero Skill Ability [E]", ImVec2(-1.0f, 24.0f))) {
+            ActionCombatSync::TriggerLocalAction(localHero, CombatActions::SKILL_ABILITY_1);
+            ShowToast("Replicating Hero Unique Skill!");
+        }
+
+        // Section 5: Visual Equipment & Loadout
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "Visual Equipment Sync:");
+        if (ImGui::Button("Equip Silver Blade (ID 1042)", ImVec2(145.0f, 24.0f))) {
+            VisualEquipSync::OnVisualEquipChange(nullptr, SlotMainHand, 1042, nullptr);
+            ShowToast("Equipped Silver Blade (Synced to peers)");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Equip Iron Shield (ID 2085)", ImVec2(145.0f, 24.0f))) {
+            VisualEquipSync::OnVisualEquipChange(nullptr, SlotOffHand, 2085, nullptr);
+            ShowToast("Equipped Iron Shield (Synced to peers)");
+        }
+
+        // Section 6: Matchmaking & Steam Controls
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 1.0f, 1.0f), "Steam P2P / Networking:");
         if (ImGui::Button("Test Co-Op Toast Notification", ImVec2(-1.0f, 24.0f))) {
             ShowToast("Greymane Co-Op Alert: Kliff engaged in combat!");
         }
 
-        // Section 5: Telemetry Footer
+        // Section 7: Telemetry Footer
         ImGui::Separator();
         ImGui::TextDisabled("Tick Rate: 30 Hz | Hermite Splines: ON");
         ImGui::TextDisabled("Toggle Menu: F2 or Insert key");

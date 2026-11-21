@@ -56,6 +56,16 @@
     - [12.2 Session Arbitration: Trio vs. 2-Player Duo](#122-session-arbitration-trio-vs-2-player-duo)
     - [12.3 Conflict Resolution Protocol](#123-conflict-resolution-protocol)
 13. [Mod Architecture Checklist & Troubleshooting Runbook](#13-mod-architecture-checklist--troubleshooting-runbook)
+14. [Remote Companion Actor Proxy Control & Component Hijacking](#14-remote-companion-actor-proxy-control--component-hijacking)
+    - [14.1 Suppressing Local Companion AI](#141-suppressing-local-companion-ai)
+    - [14.2 High-Precision Ground Clamping & Foot IK](#142-high-precision-ground-clamping--foot-ik)
+15. [Visual Equipment Attachment Matrices & Item IDs](#15-visual-equipment-attachment-matrices--item-ids)
+    - [15.1 Equipment Slot Mapping](#151-equipment-slot-mapping)
+    - [15.2 Loadout Synchronization Protocol](#152-loadout-synchronization-protocol)
+16. [Combat Action State Machines & Host Authoritative Hit Resolution](#16-combat-action-state-machines--host-authoritative-hit-resolution)
+    - [16.1 Canonical Action IDs](#161-canonical-action-ids)
+    - [16.2 Host Authoritative Combat Arbitration](#162-host-authoritative-combat-arbitration)
+17. [Mod Diagnostic & MCP Inspector Architecture](#17-mod-diagnostic--mcp-inspector-architecture)
 
 ---
 
@@ -909,3 +919,102 @@ If the in-game overlay or co-op features do not appear:
 
 3. **In-Game Toggle:**  
    Press **`F2`** or **`INSERT`** to toggle the Greymane Co-Op HUD. A persistent status badge is also visible at the top-left of the screen (`[●] Crimson Desert Co-Op | Hero: Kliff | F2 Menu`).
+
+---
+
+## 14. Remote Companion Actor Proxy Control & Component Hijacking
+
+In BlackSpace Engine, protagonists not currently piloted by the primary player exist as companion entities inside `pa::ClientChildContainerActorComponent` (`Entry[0]` Kliff, `Entry[1]` Damiane, `Entry[2]` Oongka). To manifest remote human teammates in the local world, the mod deploys **Companion Slot Hijacking**:
+
+```mermaid
+flowchart LR
+    NetworkPacket["Inbound TransformSync<br/>(30Hz Hermite Hermite/LERP)"] --> Interp["TransformInterpolator<br/>(50ms jitter buffer)"]
+    Interp --> ProxyMgr["RemoteProxyManager"]
+    
+    subgraph Local Game World
+        CCOIA["Companion CCOIA<br/>(pa::ClientChildOnlyInGameActor)"]
+        AI["ClientAIActorComponent<br/>(AI Decision Brain)"]
+        Transform["ClientTransformActorComponent<br/>(+0x40 Position, +0x50 Rotation)"]
+        Physics["ClientPhysicsActorComponent<br/>(+0x60 Linear Velocity)"]
+    end
+    
+    ProxyMgr -->|Suppress AI (+0x18 = 0)| AI
+    ProxyMgr -->|Write Sampled Position| Transform
+    ProxyMgr -->|Write Velocity & IK| Physics
+```
+
+### 14.1 Suppressing Local Companion AI
+When a peer connects as Damiane or Oongka, the local game's companion behavioral tree must be suppressed to prevent the engine from issuing pathfinding orders or automated attacks:
+- `CCOIA + 0x68` $\rightarrow$ Traverse component table to locate `pa::ClientAIActorComponent`.
+- Writing `0` to the evaluation active byte at offset `+0x18` suspends the local AI tick cleanly without destabilizing actor lifecycle or physics colliders.
+- When the peer disconnects or session ends, writing `1` instantly restores native single-player companion AI.
+
+### 14.2 High-Precision Ground Clamping & Foot IK
+The BlackSpace Engine character controller uses inverse kinematics (IK) driven by linear velocity. In addition to setting position (`Vector3`) and orientation (`Rotation`), `RemoteProxyManager` streams `velocity` (`Vector3`) into `ClientPhysicsActorComponent + 0x60`. This enables the engine's foot IK to seamlessly clamp remote teammate feet to uneven terrain, slopes, and cliffs in Pywel.
+
+---
+
+## 15. Visual Equipment Attachment Matrices & Item IDs
+
+BlackSpace Engine renders weapons and armor dynamically using composite mesh sockets attached to the protagonist skeleton.
+
+### 15.1 Equipment Slot Mapping
+The 8 canonical equipment slots managed by `VisualEquipSync`:
+
+| Slot ID | Slot Name | Typical Item / Sockets | Synchronization Behavior |
+| :--- | :--- | :--- | :--- |
+| `0` | `SlotMainHand` | Kliff Greatsword / Damiane Saber / Oongka Greathammer | Replicated on draw/sheathe. Sockets: `Bip01 R Hand`, `Bip01 Spine2`. |
+| `1` | `SlotOffHand` | Iron Kite Shield / Parrying Dagger / Throwing Axes | Replicated. Sockets: `Bip01 L Hand`, `Bip01 L Forearm`. |
+| `2` | `SlotChest` | Mercenary Cuirass / Steel Plate Armor | Full mesh swap with cloth physics simulation. |
+| `3` | `SlotHelmet` | Iron Sallet / Hood / Crown | Replicates visibility toggle (hair mesh state arbitration). |
+| `4` | `SlotGloves` | Gauntlets / Leather Bracers | Mesh attachment on forearms. |
+| `5` | `SlotBoots` | Greaves / Riding Boots | Mesh attachment on calves and feet. |
+| `6` | `SlotCloak` | Greymane Fur Cloak / Traveler Mantle | Apex cloth physics / wind simulation attachment. |
+| `7` | `SlotRanged` | Recurve Bow / Crossbow | Replicated when drawn or holstered on back. |
+
+### 15.2 Loadout Synchronization Protocol
+- When the local player equips or unequips gear, `VisualEquipChange` is intercepted and broadcasts `PktVisualEquipSync`.
+- When a newcomer joins an existing session, the host immediately transmits `SynchronizeInitialLoadout`, streaming the full 8-slot visual loadout for all active heroes.
+
+---
+
+## 16. Combat Action State Machines & Host Authoritative Hit Resolution
+
+To maintain combat fidelity across high-speed swordplay and boss encounters:
+
+### 16.1 Canonical Action IDs
+
+```text
+Action ID     Semantic Action Name              Replication Notes
+----------------------------------------------------------------------------------------
+0x1000        Idle / Guard Stance               Default baseline animation blend
+0x1001        Light Attack Combo 1              First slash / jab
+0x1002        Light Attack Combo 2              Follow-through strike
+0x1003        Light Attack Finisher             Knockback / heavy impact
+0x1010        Heavy Attack Charge               Telegraph stance with glowing weapon VFX
+0x1011        Heavy Attack Release              Break-defense overhead cleave
+0x1020        Dodge Roll                        Invulnerability frame (i-frame) window
+0x1021        Parry Counter                     Deflect window + clash VFX trigger
+0x1030        Hero Skill 1                      Kliff Roar / Damiane Phantom / Oongka Earthslam
+0x1031        Hero Skill 2                      Shield Bash / Whirlwind Slash / Ground Pound
+0x1040        Mount Horse / Beast               Transitions player to mounted physics state
+0x1041        Dismount                          Smooth dismount blend
+0x1050        Crow Wings Glide                  Aerial glide state with wing mesh attachment
+```
+
+### 16.2 Host Authoritative Combat Arbitration
+To prevent desynchronized enemy HP pools or ghost hits:
+1. **Damage Proposal:** When a peer lands a strike on an enemy actor, they send a hit notification with target actor UID.
+2. **Authority Validation:** The Host validates the hit against the enemy's authoritative bounding volume and armor resistances.
+3. **Broadcast:** Host broadcasts `PktCombatEventSync` with authoritative `damageAmount`, `staggerType`, `isCritical`, and `isFatal`.
+4. **Resolution:** All clients render the matching damage numbers, sound VFX, and enemy stagger animations synchronously.
+
+---
+
+## 17. Mod Diagnostic & MCP Inspector Architecture
+
+The standalone utility `CrimsonCoopTool.exe` provides a zero-dependency CLI interface and scriptable endpoint for external agents and MCP tools:
+
+- **Process Health:** Inspects whether `CrimsonDesert.exe` is loaded, its PID, and security boundaries.
+- **Log Stream:** Colorizes and extracts recent entries from `CrimsonCoop.log` with millisecond precision and subsystem filters.
+- **Save Sandbox Validation:** Opens and verifies `.cdcoop` binary containers, displaying hero levels, health pools, experience, quest flags, and fast travel nodes without opening the game.

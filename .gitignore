@@ -15,6 +15,7 @@ out/
 # Save files & test dumps
 *.cdcoop
 *.sav
+*.log
 
 # IDE & Editor folders
 .vs/

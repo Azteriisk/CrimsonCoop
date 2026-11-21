@@ -1,5 +1,8 @@
 #include "Dx12Hook.hpp"
 #include "GuiOverlay.hpp"
+#include "SteamTransport.hpp"
+#include "RemoteProxyManager.hpp"
+#include "Interpolation.hpp"
 #include "Logger.hpp"
 #include <imgui.h>
 #include <imgui_impl_win32.h>
@@ -165,6 +168,16 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
     if (!g_d3d12CommandQueue) {
         pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&g_d3d12CommandQueue);
     }
+
+    static TransformInterpolator g_interpolator(0.05);
+
+    // 1. Pump P2P packets from Steamworks SDR
+    SteamTransport::PollAndDispatch(g_pActiveSession, &g_interpolator);
+
+    // 2. Drive remote proxies using Hermite-interpolated transforms
+    auto nowTime = std::chrono::steady_clock::now().time_since_epoch();
+    double currentSeconds = std::chrono::duration<double>(nowTime).count();
+    RemoteProxyManager::Instance().Update(currentSeconds, g_interpolator);
 
     if (g_dx12Initialized && g_d3d12CommandQueue) {
         IDXGISwapChain3* pSwapChain3 = nullptr;

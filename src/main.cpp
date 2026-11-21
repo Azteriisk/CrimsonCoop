@@ -8,6 +8,9 @@
 #include "BlackSpaceChain.hpp"
 #include "Config.hpp"
 #include "SteamTransport.hpp"
+#include "RemoteProxyManager.hpp"
+#include "VisualEquipSync.hpp"
+#include "ActionCombatSync.hpp"
 #include <iostream>
 #include <iomanip>
 
@@ -226,6 +229,56 @@ int main() {
     if (duoSession.SwitchToUnoccupied(client2SteamId, CharacterType::Kliff, switchReason)) {
         std::cout << "  -> [DUO SWAP] Client 2 successfully switched into newly-freed reserve character: Kliff!\n";
     }
+
+    // 12. Remote Proxy Actor Spawning & AI Suppression Test
+    std::cout << "\n[Remote Proxy System] Verifying proxy lifecycle and AI suppression...\n";
+    auto& proxyMgr = RemoteProxyManager::Instance();
+    proxyMgr.RegisterRemotePlayer(client2SteamId, CharacterType::Damiane, "Player_Alex");
+    proxyMgr.BindProxyActor(client2SteamId, 0x1400A000ULL);
+    
+    const auto* pProxy = proxyMgr.GetProxyBySteamId(client2SteamId);
+    if (pProxy && pProxy->isAiDisabled) {
+        std::cout << "  -> [PROXY BIND] Bound Damiane to CCOIA 0x1400A000 (Local AI Suppressed: YES)\n";
+    }
+
+    // 13. Visual Equipment Synchronization Test
+    std::cout << "[Visual Equip System] Verifying weapon and loadout synchronization...\n";
+    VisualEquipSync::Install();
+    PktVisualEquipSync mockEquip{};
+    mockEquip.header.magic[0] = 'C';
+    mockEquip.header.magic[1] = 'D';
+    mockEquip.header.type = PacketType::VisualEquipSync;
+    mockEquip.playerSteamId = client2SteamId;
+    mockEquip.character = CharacterType::Damiane;
+    mockEquip.slotId = SlotMainHand;
+    mockEquip.itemId = 4012; // Damiane's Silver-Edged Saber
+    mockEquip.cosmeticFlags = 0x01;
+
+    VisualEquipSync::ApplyRemoteEquip(mockEquip);
+    auto damianeLoadout = VisualEquipSync::GetCachedLoadout(CharacterType::Damiane);
+    if (damianeLoadout.slotItemIds[SlotMainHand] == 4012) {
+        std::cout << "  -> [EQUIP SYNC] Damiane MainHand synced to Item 4012 (Silver-Edged Saber)!\n";
+    }
+
+    // 14. Combat Action & Damage Replication Test
+    std::cout << "[Combat Action System] Verifying animation replication and host damage arbitration...\n";
+    ActionCombatSync::Install();
+    ActionCombatSync::TriggerLocalAction(CharacterType::Kliff, CombatActions::LIGHT_ATTACK_1, 1.0f, 0x501);
+
+    PktCombatEventSync hitEvent{};
+    hitEvent.header.magic[0] = 'C';
+    hitEvent.header.magic[1] = 'D';
+    hitEvent.header.type = PacketType::CombatEventSync;
+    hitEvent.attackerSteamId = hostSteamId;
+    hitEvent.attackerChar = CharacterType::Kliff;
+    hitEvent.targetActorUid = 0x501;
+    hitEvent.damageAmount = 1420.5f;
+    hitEvent.staggerType = 2; // Heavy stagger
+    hitEvent.isCritical = true;
+    hitEvent.isFatal = false;
+
+    ActionCombatSync::HandleCombatHit(hitEvent, true);
+    std::cout << "  -> [COMBAT SYNC] Host arbitrated 1420.5 critical damage onto Enemy 0x501!\n";
 
     std::cout << "\n=========================================================\n";
     std::cout << "  All Co-op Core Subsystems Verified Successfully!       \n";

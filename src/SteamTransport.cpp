@@ -2,6 +2,9 @@
 #include "RealSteamworks.hpp"
 #include "GuiOverlay.hpp"
 #include "CoopSaveManager.hpp"
+#include "ActionCombatSync.hpp"
+#include "VisualEquipSync.hpp"
+#include "RemoteProxyManager.hpp"
 #include <iostream>
 #include <unordered_map>
 
@@ -232,6 +235,36 @@ void SteamTransport::DispatchPacket(const InboundPacket& pkt, SessionManager* pS
             snapshot.rotation = sync->rotation;
             snapshot.velocity = sync->velocity;
             pInterpolator->AddSnapshot(snapshot);
+            break;
+        }
+
+        case PacketType::ActionSync: {
+            if (pkt.payload.size() < sizeof(PktActionSync)) break;
+            const auto* actionPkt = reinterpret_cast<const PktActionSync*>(pkt.payload.data());
+            ActionCombatSync::HandleInboundAction(*actionPkt);
+            break;
+        }
+
+        case PacketType::VisualEquipSync: {
+            if (pkt.payload.size() < sizeof(PktVisualEquipSync)) break;
+            const auto* equipPkt = reinterpret_cast<const PktVisualEquipSync*>(pkt.payload.data());
+            VisualEquipSync::ApplyRemoteEquip(*equipPkt);
+            break;
+        }
+
+        case PacketType::CombatEventSync: {
+            if (pkt.payload.size() < sizeof(PktCombatEventSync)) break;
+            const auto* combatPkt = reinterpret_cast<const PktCombatEventSync*>(pkt.payload.data());
+            ActionCombatSync::HandleCombatHit(*combatPkt, s_isHost);
+            break;
+        }
+
+        case PacketType::ReserveSwitchSync: {
+            if (pkt.payload.size() < sizeof(PktReserveSwitchSync) || !pSession) break;
+            const auto* resPkt = reinterpret_cast<const PktReserveSwitchSync*>(pkt.payload.data());
+            std::string reason;
+            pSession->SwitchToUnoccupied(resPkt->playerSteamId, resPkt->newCharacter, reason);
+            GuiOverlay::ShowToast(std::string("Duo Mode: Teammate switched to reserve ") + CharacterToString(resPkt->newCharacter));
             break;
         }
 

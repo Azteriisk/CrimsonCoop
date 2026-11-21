@@ -67,6 +67,9 @@ set(CORE_SOURCES
     src/Logger.cpp
     src/Interpolation.cpp
     src/SessionManager.cpp
+    src/RemoteProxyManager.cpp
+    src/VisualEquipSync.cpp
+    src/ActionCombatSync.cpp
     src/CoopSaveManager.cpp
     src/SaveRedirector.cpp
     src/GuiOverlay.cpp
@@ -97,12 +100,20 @@ add_executable(CrimsonCoopLauncher
     src/launcher.cpp
 )
 
+# Diagnostic & MCP Inspector CLI Tool
+add_executable(CrimsonCoopTool
+    src/tool.cpp
+    src/CoopSaveManager.cpp
+)
+
 if (MSVC)
     target_compile_options(cd_coop_harness PRIVATE /W4 /permissive-)
     target_compile_options(CrimsonCoop PRIVATE /W4 /permissive-)
     target_compile_options(CrimsonCoopLauncher PRIVATE /W4 /permissive-)
+    target_compile_options(CrimsonCoopTool PRIVATE /W4 /permissive-)
 else()
     target_compile_options(cd_coop_harness PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
     target_compile_options(CrimsonCoop PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
     target_compile_options(CrimsonCoopLauncher PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
+    target_compile_options(CrimsonCoopTool PRIVATE -Wall -Wextra -pedantic -Wno-unused-parameter)
 endif()

@@ -5,6 +5,10 @@
 #include "SaveRedirector.hpp"
 #include "Dx12Hook.hpp"
 #include "SessionManager.hpp"
+#include "VisualEquipSync.hpp"
+#include "ActionCombatSync.hpp"
+#include "SteamTransport.hpp"
+#include "RemoteProxyManager.hpp"
 #include "Common.hpp"
 
 namespace CrimsonCoop {
@@ -56,6 +60,20 @@ DWORD WINAPI ModMainThread(LPVOID lpParam) {
         Logger::Log("[Core] Error: Failed to initialize Dx12Hook!\n");
     }
 
+    // 7. Install Visual Equipment Synchronizer
+    if (VisualEquipSync::Install()) {
+        Logger::Log("[Core] Visual equipment synchronization active.\n");
+    }
+
+    // 8. Install Combat Actions & Animation Replication
+    if (ActionCombatSync::Install()) {
+        Logger::Log("[Core] Combat actions & animation replication active.\n");
+    }
+
+    // 9. Initialize Native Steamworks P2P Transport (SDR)
+    SteamTransport::Initialize(76561198000000001ULL, true);
+    SteamTransport::CreateCoopLobby(3);
+
     return 0;
 }
 
@@ -69,6 +87,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
         CreateThread(nullptr, 0, CrimsonCoop::ModMainThread, hModule, 0, nullptr);
         break;
     case DLL_PROCESS_DETACH:
+        CrimsonCoop::VisualEquipSync::Remove();
+        CrimsonCoop::ActionCombatSync::Remove();
+        CrimsonCoop::SteamTransport::Shutdown();
         CrimsonCoop::Dx12Hook::Remove();
         CrimsonCoop::SaveRedirector::Remove();
         CrimsonCoop::Logger::Shutdown();

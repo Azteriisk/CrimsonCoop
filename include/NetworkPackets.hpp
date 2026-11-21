@@ -12,7 +12,10 @@ enum class PacketType : uint8_t {
     TransformSync      = 0x05,
     ActionSync         = 0x06,
     SaveCheckpointSync = 0x07,
-    ReserveSwitchSync  = 0x08
+    ReserveSwitchSync  = 0x08,
+    VisualEquipSync    = 0x09,
+    CombatEventSync    = 0x0A,
+    WorldEnemySync     = 0x0B
 };
 
 enum class HandshakeStatus : uint8_t {
@@ -93,6 +96,40 @@ struct PktSaveCheckpointSync {
     PacketHeader header;
     uint32_t     checkpointId;
     uint64_t     worldTick;
+};
+
+// Visual Equipment Swap Sync: Broadcast when any player changes armor/weapons
+struct PktVisualEquipSync {
+    PacketHeader  header;
+    PlayerId      playerSteamId;
+    CharacterType character;
+    int16_t       slotId;        // 0: MainHand, 1: OffHand, 2: Chest, 3: Helm, 4: Gloves, 5: Boots
+    int16_t       itemId;        // Item prefab ID (0xFFFF = unequip)
+    uint32_t      cosmeticFlags; // Dye / Transmog flags
+};
+
+// Combat Hit / Damage Replication: Host authoritative damage arbitration
+struct PktCombatEventSync {
+    PacketHeader  header;
+    PlayerId      attackerSteamId;
+    CharacterType attackerChar;
+    uint32_t      targetActorUid;
+    float         damageAmount;
+    uint16_t      staggerType;   // 0: None, 1: LightStagger, 2: HeavyStagger, 3: Knockdown
+    bool          isCritical;
+    bool          isFatal;
+};
+
+// World Enemy & Boss Synchronization: Host streams dynamic boss health and target aggro
+struct PktWorldEnemySync {
+    PacketHeader  header;
+    uint32_t      enemyActorUid;
+    Vector3       position;
+    Rotation      rotation;
+    float         currentHp;
+    float         maxHp;
+    uint64_t      aiTargetSteamId; // Which player the enemy is currently aggro'd on
+    uint16_t      activeActionId;  // Boss attack telegraph ID
 };
 
 #pragma pack(pop)

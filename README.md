@@ -30,15 +30,32 @@
 * Native Steam friend invitation overlay support (`Shift+Tab` invite dialog).
 
 ### 5. In-Game DirectX 12 Overlay (Dear ImGui)
-* Hooks `IDXGISwapChain::Present` and `ResizeBuffers`.
-* Features an on-screen party HUD showing active teammates, latency, and reserve slots.
+* Hooks `IDXGISwapChain::Present`, `IDXGISwapChain1::Present1`, and `ResizeBuffers`.
+* Intercepts `ID3D12CommandQueue::ExecuteCommandLists` to capture the native DirectX 12 Direct Command Queue.
+* Features an on-screen party HUD showing active teammates, latency, combat actions, equipment loadouts, and reserve slots.
 * Modal dialogs for join-time character conflict arbitration and mutual role-swap negotiation.
-* Toggleable via `F2` or `Insert`.
+* Persistent non-intrusive status badge at top-left; toggleable via `F2` or `Insert`.
 
-### 6. Patch-Resilient BlackSpace Engine Resolver
+### 6. Remote Companion Actor Proxy & Slot Hijacking
+* Manifests human teammates in the local world by hijacking companion actor slots in `ChildContainerActorComponent` (`Entry[0]` Kliff, `Entry[1]` Damiane, `Entry[2]` Oongka).
+* Suppresses native single-player companion AI decision-making without destabilizing physics or animations.
+* Streams 30Hz Hermite-interpolated position, rotation, and linear velocity into character transform components for full-fidelity terrain clamping and foot IK.
+
+### 7. Visual Equipment & Loadout Synchronization
+* Hooks `VisualEquipChange` and `BatchEquip` to replicate weapon, shield, and armor swaps in real time across 8 equipment slots.
+* Automatically broadcasts full loadouts to late-joining peers.
+
+### 8. Combat Action & Animation Replication
+* Replicates attack combos, heavy charge strikes, dodge rolls, parries, hero abilities, and Crow Wings gliding.
+* Host-authoritative combat damage arbitration: validates hit events and broadcasts synchronized damage numbers, hit reactions, and stagger states.
+
+### 9. Patch-Resilient BlackSpace Engine Resolver
 * Candidate AOB ladders with wildcard scanning to dynamically locate `ClientActorManagerGlobal` across game patches.
 * Traverses the static engine chain to inspect live appearance XML asset paths (`cd_phm_macduff`, `cd_phw_damian`, `cd_phm_oongka`).
 * Tracks `world_generation` counters to cleanly detect save-load world teardowns and reallocations.
+
+### 10. Standalone Diagnostic & MCP Inspector (`CrimsonCoopTool.exe`)
+* Scriptable CLI tool inspecting running game status, colorized `CrimsonCoop.log` streams, and `.cdcoop` save containers.
 
 ---
 
@@ -59,28 +76,37 @@ CrimsonCoop/
 │   ├── BlackSpaceChain.hpp        # In-memory static chain resolver
 │   ├── NetworkPackets.hpp         # Packed binary packet structures
 │   ├── SessionManager.hpp         # Roster arbitration, duo reserve logic
+│   ├── RemoteProxyManager.hpp     # Remote player proxy binding & AI suppression
+│   ├── VisualEquipSync.hpp        # 8-slot weapon & armor visual sync
+│   ├── ActionCombatSync.hpp       # Combat animations & host damage arbitration
 │   ├── Interpolation.hpp          # Hermite/linear snapshot smoothing
 │   ├── CoopSaveManager.hpp        # .cdcoop binary serializer
 │   ├── SaveRedirector.hpp         # MinHook CreateFileW interception
 │   ├── RealSteamworks.hpp         # Dynamic steam_api64.dll native driver
 │   ├── SteamTransport.hpp         # Steam P2P SDR network transport
-│   ├── Dx12Hook.hpp               # DirectX 12 SwapChain hook
-│   └── GuiOverlay.hpp             # Dear ImGui party HUD & modals
+│   ├── Dx12Hook.hpp               # DirectX 12 SwapChain & CommandQueue hooks
+│   ├── GuiOverlay.hpp             # Dear ImGui party HUD & modals
+│   └── Logger.hpp                 # Thread-safe millisecond file logger
 └── src/
-    ├── main.cpp                   # Automated comprehensive verification harness
-    ├── launcher.cpp               # Standalone memory injector executable
+    ├── main.cpp                   # 14-subsystem automated verification harness
+    ├── launcher.cpp               # Standalone memory injector (clean launch & hot-attach)
+    ├── tool.cpp                   # Diagnostic CLI & MCP inspector
     ├── dllmain.cpp                # Injected mod runtime DLL entry point
     ├── Config.cpp                 # Configuration implementation
     ├── PatternScan.cpp            # Signature scanner implementation
     ├── BlackSpaceChain.cpp        # Live engine chain traversal
     ├── SessionManager.cpp         # Roster & conflict arbitration
+    ├── RemoteProxyManager.cpp     # Proxy actor management implementation
+    ├── VisualEquipSync.cpp        # Visual equipment replication implementation
+    ├── ActionCombatSync.cpp       # Combat action replication implementation
     ├── Interpolation.cpp          # Snapshot buffering math
     ├── CoopSaveManager.cpp        # Save file binary container I/O
     ├── SaveRedirector.cpp         # File path redirection routines
     ├── RealSteamworks.cpp         # Dynamic Steamworks VTable dispatcher
     ├── SteamTransport.cpp         # Packet dispatching & SDR handling
     ├── Dx12Hook.cpp               # SwapChain VTable hooking & WNDPROC routing
-    └── GuiOverlay.cpp             # ImGui rendering routines
+    ├── GuiOverlay.cpp             # ImGui rendering routines
+    └── Logger.cpp                 # File logging implementation
 ```
 
 ---

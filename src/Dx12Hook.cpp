@@ -79,6 +79,61 @@ static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, U
     oExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
 }
 
+static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
+    __try {
+        if (!g_dx12Initialized || !g_d3d12CommandQueue) return false;
+
+        IDXGISwapChain3* pSwapChain3 = nullptr;
+        if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&pSwapChain3))) || !pSwapChain3) {
+            return false;
+        }
+
+        UINT backBufferIdx = pSwapChain3->GetCurrentBackBufferIndex();
+        pSwapChain3->Release();
+
+        if (backBufferIdx >= g_bufferCount || !g_d3d12CommandAllocators[backBufferIdx]) {
+            return false;
+        }
+
+        ID3D12Resource* pTarget = g_d3d12RenderTargetBuffers[backBufferIdx];
+        if (!pTarget) return false;
+
+        g_d3d12CommandAllocators[backBufferIdx]->Reset();
+
+        D3D12_RESOURCE_BARRIER barrier = {};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = pTarget;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+        g_d3d12CommandList->Reset(g_d3d12CommandAllocators[backBufferIdx], nullptr);
+        g_d3d12CommandList->ResourceBarrier(1, &barrier);
+        g_d3d12CommandList->OMSetRenderTargets(1, &g_d3d12RenderTargetHandles[backBufferIdx], FALSE, nullptr);
+
+        ID3D12DescriptorHeap* heaps[] = { g_d3d12SrvHeap };
+        g_d3d12CommandList->SetDescriptorHeaps(1, heaps);
+
+        // Render Dear ImGui frame
+        GuiOverlay::Render(g_pActiveSession);
+        ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_d3d12CommandList);
+
+        // Transition backbuffer back to PRESENT
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        g_d3d12CommandList->ResourceBarrier(1, &barrier);
+
+        g_d3d12CommandList->Close();
+
+        ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandList };
+        g_d3d12CommandQueue->ExecuteCommandLists(1, ppCommandLists);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) return;
 
@@ -179,46 +234,8 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
     double currentSeconds = std::chrono::duration<double>(nowTime).count();
     RemoteProxyManager::Instance().Update(currentSeconds, g_interpolator);
 
-    if (g_dx12Initialized && g_d3d12CommandQueue) {
-        IDXGISwapChain3* pSwapChain3 = nullptr;
-        if (SUCCEEDED(pSwapChain->QueryInterface(IID_PPV_ARGS(&pSwapChain3)))) {
-            UINT backBufferIdx = pSwapChain3->GetCurrentBackBufferIndex();
-            pSwapChain3->Release();
-
-            if (backBufferIdx < g_bufferCount && g_d3d12CommandAllocators[backBufferIdx]) {
-                g_d3d12CommandAllocators[backBufferIdx]->Reset();
-
-                D3D12_RESOURCE_BARRIER barrier = {};
-                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-                barrier.Transition.pResource = g_d3d12RenderTargetBuffers[backBufferIdx];
-                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-
-                g_d3d12CommandList->Reset(g_d3d12CommandAllocators[backBufferIdx], nullptr);
-                g_d3d12CommandList->ResourceBarrier(1, &barrier);
-                g_d3d12CommandList->OMSetRenderTargets(1, &g_d3d12RenderTargetHandles[backBufferIdx], FALSE, nullptr);
-
-                ID3D12DescriptorHeap* heaps[] = { g_d3d12SrvHeap };
-                g_d3d12CommandList->SetDescriptorHeaps(1, heaps);
-
-                // Render Dear ImGui frame
-                GuiOverlay::Render(g_pActiveSession);
-                ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_d3d12CommandList);
-
-                // Transition backbuffer back to PRESENT
-                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-                g_d3d12CommandList->ResourceBarrier(1, &barrier);
-
-                g_d3d12CommandList->Close();
-
-                ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandList };
-                g_d3d12CommandQueue->ExecuteCommandLists(1, ppCommandLists);
-            }
-        }
-    }
+    // 3. Render ImGui overlay via Direct Command Queue safely
+    SafeRenderImGui(pSwapChain);
 }
 
 static HRESULT WINAPI Hook_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {

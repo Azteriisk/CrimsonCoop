@@ -91,34 +91,55 @@ void RealSteamworks::OpenInviteOverlay(uint64_t lobbyId) {
 HSteamListenSocket RealSteamworks::CreateListenSocketP2P(int nLocalVirtualPort) {
     if (!s_pSteamNetworkingSockets) return k_HSteamListenSocket_Invalid;
 
-    void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
-    // CreateListenSocketP2P is VTable index 1
-    typedef HSteamListenSocket (*tCreateListenSocketP2P)(void* pThis, int nPort, int nOptions, const void* pOptions);
-    auto fn = reinterpret_cast<tCreateListenSocketP2P>(pVtable[1]);
-    return fn(s_pSteamNetworkingSockets, nLocalVirtualPort, 0, nullptr);
+    __try {
+        void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
+        if (!pVtable || IsBadReadPtr(pVtable, sizeof(void*) * 8)) return k_HSteamListenSocket_Invalid;
+
+        // CreateListenSocketP2P is VTable index 1
+        typedef HSteamListenSocket (*tCreateListenSocketP2P)(void* pThis, int nPort, int nOptions, const void* pOptions);
+        auto fn = reinterpret_cast<tCreateListenSocketP2P>(pVtable[1]);
+        if (!fn) return k_HSteamListenSocket_Invalid;
+        return fn(s_pSteamNetworkingSockets, nLocalVirtualPort, 0, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return k_HSteamListenSocket_Invalid;
+    }
 }
 
 HSteamNetConnection RealSteamworks::ConnectP2P(uint64_t hostSteamId, int nRemoteVirtualPort) {
     if (!s_pSteamNetworkingSockets) return k_HSteamNetConnection_Invalid;
 
-    SteamNetworkingIdentity identity;
-    identity.SetSteamID64(hostSteamId);
+    __try {
+        SteamNetworkingIdentity identity;
+        identity.SetSteamID64(hostSteamId);
 
-    void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
-    // ConnectP2P is VTable index 2
-    typedef HSteamNetConnection (*tConnectP2P)(void* pThis, const SteamNetworkingIdentity* pIdentity, int nPort, int nOptions, const void* pOptions);
-    auto fn = reinterpret_cast<tConnectP2P>(pVtable[2]);
-    return fn(s_pSteamNetworkingSockets, &identity, nRemoteVirtualPort, 0, nullptr);
+        void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
+        if (!pVtable || IsBadReadPtr(pVtable, sizeof(void*) * 8)) return k_HSteamNetConnection_Invalid;
+
+        // ConnectP2P is VTable index 2
+        typedef HSteamNetConnection (*tConnectP2P)(void* pThis, const SteamNetworkingIdentity* pIdentity, int nPort, int nOptions, const void* pOptions);
+        auto fn = reinterpret_cast<tConnectP2P>(pVtable[2]);
+        if (!fn) return k_HSteamNetConnection_Invalid;
+        return fn(s_pSteamNetworkingSockets, &identity, nRemoteVirtualPort, 0, nullptr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return k_HSteamNetConnection_Invalid;
+    }
 }
 
 bool RealSteamworks::CloseConnection(HSteamNetConnection hConn, int nReason, const char* pszDebug) {
     if (!s_pSteamNetworkingSockets || hConn == k_HSteamNetConnection_Invalid) return false;
 
-    void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
-    // CloseConnection is VTable index 4
-    typedef bool (*tCloseConnection)(void* pThis, HSteamNetConnection hPeer, int nReason, const char* pszDebug, bool bEnableLinger);
-    auto fn = reinterpret_cast<tCloseConnection>(pVtable[4]);
-    return fn(s_pSteamNetworkingSockets, hConn, nReason, pszDebug, false);
+    __try {
+        void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
+        if (!pVtable || IsBadReadPtr(pVtable, sizeof(void*) * 8)) return false;
+
+        // CloseConnection is VTable index 4
+        typedef bool (*tCloseConnection)(void* pThis, HSteamNetConnection hPeer, int nReason, const char* pszDebug, bool bEnableLinger);
+        auto fn = reinterpret_cast<tCloseConnection>(pVtable[4]);
+        if (!fn) return false;
+        return fn(s_pSteamNetworkingSockets, hConn, nReason, pszDebug, false);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 bool RealSteamworks::SendMessage(HSteamNetConnection hConn, const void* pData, uint32_t cbData, bool reliable) {
@@ -126,21 +147,35 @@ bool RealSteamworks::SendMessage(HSteamNetConnection hConn, const void* pData, u
 
     int flags = reliable ? k_nSteamNetworkingSend_Reliable : k_nSteamNetworkingSend_Unreliable;
 
-    void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
-    // SendMessageToConnection is VTable index 6
-    typedef int (*tSendMessageToConnection)(void* pThis, HSteamNetConnection hConn, const void* pData, uint32_t cbData, int nSendFlags, int64_t* pOutMessageNumber);
-    auto fn = reinterpret_cast<tSendMessageToConnection>(pVtable[6]);
-    return fn(s_pSteamNetworkingSockets, hConn, pData, cbData, flags, nullptr) >= 0;
+    __try {
+        void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
+        if (!pVtable || IsBadReadPtr(pVtable, sizeof(void*) * 8)) return false;
+
+        // SendMessageToConnection is VTable index 6
+        typedef int (*tSendMessageToConnection)(void* pThis, HSteamNetConnection hConn, const void* pData, uint32_t cbData, int nSendFlags, int64_t* pOutMessageNumber);
+        auto fn = reinterpret_cast<tSendMessageToConnection>(pVtable[6]);
+        if (!fn) return false;
+        return fn(s_pSteamNetworkingSockets, hConn, pData, cbData, flags, nullptr) >= 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 int RealSteamworks::ReceiveMessages(HSteamNetConnection hConn, SteamNetworkingMessage_t** ppOutMessages, int nMaxMessages) {
     if (!s_pSteamNetworkingSockets || hConn == k_HSteamNetConnection_Invalid) return 0;
 
-    void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
-    // ReceiveMessagesOnConnection is VTable index 8
-    typedef int (*tReceiveMessagesOnConnection)(void* pThis, HSteamNetConnection hConn, SteamNetworkingMessage_t** ppOutMessages, int nMaxMessages);
-    auto fn = reinterpret_cast<tReceiveMessagesOnConnection>(pVtable[8]);
-    return fn(s_pSteamNetworkingSockets, hConn, ppOutMessages, nMaxMessages);
+    __try {
+        void** pVtable = *reinterpret_cast<void***>(s_pSteamNetworkingSockets);
+        if (!pVtable || IsBadReadPtr(pVtable, sizeof(void*) * 8)) return 0;
+
+        // ReceiveMessagesOnConnection is VTable index 8
+        typedef int (*tReceiveMessagesOnConnection)(void* pThis, HSteamNetConnection hConn, SteamNetworkingMessage_t** ppOutMessages, int nMaxMessages);
+        auto fn = reinterpret_cast<tReceiveMessagesOnConnection>(pVtable[8]);
+        if (!fn) return 0;
+        return fn(s_pSteamNetworkingSockets, hConn, ppOutMessages, nMaxMessages);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
 }
 
 } // namespace CrimsonCoop

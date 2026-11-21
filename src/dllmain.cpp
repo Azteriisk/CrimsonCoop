@@ -72,7 +72,7 @@ DWORD WINAPI ModMainThread(LPVOID lpParam) {
 
     // 9. Initialize Native Steamworks P2P Transport (SDR)
     SteamTransport::Initialize(76561198000000001ULL, true);
-    SteamTransport::CreateCoopLobby(3);
+    Logger::Log("[Core] Native Steamworks P2P Transport initialized.\n");
 
     return 0;
 }

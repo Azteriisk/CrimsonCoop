@@ -21,10 +21,12 @@ bool Dx12Hook::s_isInstalled = false;
 typedef HRESULT(WINAPI* tPresent)(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
 typedef HRESULT(WINAPI* tPresent1)(IDXGISwapChain1* pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters);
 typedef HRESULT(WINAPI* tResizeBuffers)(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
+typedef void(WINAPI* tExecuteCommandLists)(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists);
 
 static tPresent oPresent = nullptr;
 static tPresent1 oPresent1 = nullptr;
 static tResizeBuffers oResizeBuffers = nullptr;
+static tExecuteCommandLists oExecuteCommandLists = nullptr;
 static WNDPROC oWndProc = nullptr;
 static HWND g_hGameWindow = nullptr;
 
@@ -32,7 +34,7 @@ static ID3D12Device* g_d3d12Device = nullptr;
 static ID3D12DescriptorHeap* g_d3d12SrvHeap = nullptr;
 static ID3D12DescriptorHeap* g_d3d12RtvHeap = nullptr;
 static ID3D12CommandQueue* g_d3d12CommandQueue = nullptr;
-static ID3D12GraphicsCommandList* g_d3d12CommandList = nullptr;
+static ID3D12GraphicsCommandList* g_d3d12CommandLists[4] = { nullptr };
 static ID3D12CommandAllocator* g_d3d12CommandAllocators[4] = { nullptr };
 static ID3D12Resource* g_d3d12RenderTargetBuffers[4] = { nullptr };
 static D3D12_CPU_DESCRIPTOR_HANDLE g_d3d12RenderTargetHandles[4] = {};
@@ -48,7 +50,7 @@ SessionManager* g_pActiveSession = nullptr;
 static LRESULT CALLBACK Hook_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     if (uMsg == WM_KEYDOWN && !(lParam & (1 << 30)) && (wParam == VK_INSERT || wParam == VK_F2)) {
         GuiOverlay::ToggleVisible();
-        Logger::Log("[Dx12Hook] Overlay toggled. Visible: %d\n", GuiOverlay::IsVisible());
+        Logger::Log("[Dx12Hook] Overlay toggled via WndProc. Visible: %d\n", GuiOverlay::IsVisible());
         return 0;
     }
 
@@ -59,6 +61,23 @@ static LRESULT CALLBACK Hook_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
     }
 
     return CallWindowProc(oWndProc, hWnd, uMsg, wParam, lParam);
+}
+
+static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+    if (pCommandQueue && !g_d3d12CommandQueue) {
+        D3D12_COMMAND_QUEUE_DESC desc = pCommandQueue->GetDesc();
+        if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+            ID3D12Device* pQueueDev = nullptr;
+            if (SUCCEEDED(pCommandQueue->GetDevice(IID_PPV_ARGS(&pQueueDev)))) {
+                if (!g_d3d12Device || pQueueDev == g_d3d12Device) {
+                    g_d3d12CommandQueue = pCommandQueue;
+                    Logger::Log("[Dx12Hook] Acquired DIRECT Presentation CommandQueue from ExecuteCommandLists: %p\n", (void*)g_d3d12CommandQueue);
+                }
+                pQueueDev->Release();
+            }
+        }
+    }
+    oExecuteCommandLists(pCommandQueue, NumCommandLists, ppCommandLists);
 }
 
 static void CleanupRenderTargets() {
@@ -92,7 +111,7 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         UINT backBufferIdx = pSwapChain3->GetCurrentBackBufferIndex();
         pSwapChain3->Release();
 
-        if (backBufferIdx >= g_bufferCount || !g_d3d12CommandAllocators[backBufferIdx]) {
+        if (backBufferIdx >= g_bufferCount || !g_d3d12CommandAllocators[backBufferIdx] || !g_d3d12CommandLists[backBufferIdx]) {
             return false;
         }
 
@@ -104,11 +123,12 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         if (g_d3d12Fence && g_fenceValues[backBufferIdx] != 0) {
             if (g_d3d12Fence->GetCompletedValue() < g_fenceValues[backBufferIdx]) {
                 g_d3d12Fence->SetEventOnCompletion(g_fenceValues[backBufferIdx], g_hFenceEvent);
-                WaitForSingleObject(g_hFenceEvent, 1000);
+                WaitForSingleObject(g_hFenceEvent, 2000);
             }
         }
 
         g_d3d12CommandAllocators[backBufferIdx]->Reset();
+        g_d3d12CommandLists[backBufferIdx]->Reset(g_d3d12CommandAllocators[backBufferIdx], nullptr);
 
         step = 4;
         D3D12_RESOURCE_BARRIER barrier = {};
@@ -118,15 +138,14 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        g_d3d12CommandLists[backBufferIdx]->ResourceBarrier(1, &barrier);
 
         step = 5;
-        g_d3d12CommandList->Reset(g_d3d12CommandAllocators[backBufferIdx], nullptr);
-        g_d3d12CommandList->ResourceBarrier(1, &barrier);
-        g_d3d12CommandList->OMSetRenderTargets(1, &g_d3d12RenderTargetHandles[backBufferIdx], FALSE, nullptr);
+        g_d3d12CommandLists[backBufferIdx]->OMSetRenderTargets(1, &g_d3d12RenderTargetHandles[backBufferIdx], FALSE, nullptr);
 
         step = 6;
         ID3D12DescriptorHeap* heaps[] = { g_d3d12SrvHeap };
-        g_d3d12CommandList->SetDescriptorHeaps(1, heaps);
+        g_d3d12CommandLists[backBufferIdx]->SetDescriptorHeaps(1, heaps);
 
         step = 7;
         GuiOverlay::Render(g_pActiveSession);
@@ -134,19 +153,19 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
         step = 8;
         ImDrawData* drawData = ImGui::GetDrawData();
         if (drawData) {
-            ImGui_ImplDX12_RenderDrawData(drawData, g_d3d12CommandList);
+            ImGui_ImplDX12_RenderDrawData(drawData, g_d3d12CommandLists[backBufferIdx]);
         }
 
         step = 9;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-        g_d3d12CommandList->ResourceBarrier(1, &barrier);
+        g_d3d12CommandLists[backBufferIdx]->ResourceBarrier(1, &barrier);
 
         step = 10;
-        g_d3d12CommandList->Close();
+        g_d3d12CommandLists[backBufferIdx]->Close();
 
         step = 11;
-        ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandList };
+        ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandLists[backBufferIdx] };
         g_d3d12CommandQueue->ExecuteCommandLists(1, ppCommandLists);
 
         // Signal fence so we know when GPU finishes this frame's work
@@ -217,22 +236,21 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
             }
         }
 
-        // 2. Create Command Allocator for each backbuffer
+        // 2. Create Command Allocator and Command List for each backbuffer
         for (UINT i = 0; i < g_bufferCount; ++i) {
             if (FAILED(g_d3d12Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&g_d3d12CommandAllocators[i])))) {
                 Logger::Log("[Dx12Hook] Error: Failed to create Command Allocator %u!\n", i);
                 return;
             }
+
+            if (FAILED(g_d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_d3d12CommandAllocators[i], nullptr, IID_PPV_ARGS(&g_d3d12CommandLists[i])))) {
+                Logger::Log("[Dx12Hook] Error: Failed to create Command List %u!\n", i);
+                return;
+            }
+            g_d3d12CommandLists[i]->Close();
         }
 
-        // 3. Create Graphics Command List
-        if (FAILED(g_d3d12Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_d3d12CommandAllocators[0], nullptr, IID_PPV_ARGS(&g_d3d12CommandList)))) {
-            Logger::Log("[Dx12Hook] Error: Failed to create Graphics Command List!\n");
-            return;
-        }
-        g_d3d12CommandList->Close();
-
-        // 4. Create SRV Descriptor Heap for ImGui Font Textures
+        // 3. Create SRV Descriptor Heap for ImGui Font Textures
         D3D12_DESCRIPTOR_HEAP_DESC srvDesc = {};
         srvDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvDesc.NumDescriptors = 1;
@@ -242,14 +260,14 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
             return;
         }
 
-        // 5. Initialize ImGui DX12
+        // 4. Initialize ImGui DX12
         DXGI_FORMAT rtvFormat = desc.BufferDesc.Format != DXGI_FORMAT_UNKNOWN ? desc.BufferDesc.Format : DXGI_FORMAT_R8G8B8A8_UNORM;
         if (GuiOverlay::Initialize(g_hGameWindow, g_d3d12Device, g_bufferCount, rtvFormat, g_d3d12SrvHeap)) {
             g_dx12Initialized = true;
             Logger::Log("[Dx12Hook] In-Game ImGui Overlay initialized successfully!\n");
         }
 
-        // 6. Create D3D12 Fence for Command Allocator GPU synchronization
+        // 5. Create D3D12 Fence for Command Allocator GPU synchronization
         if (FAILED(g_d3d12Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&g_d3d12Fence)))) {
             Logger::Log("[Dx12Hook] Error: Failed to create D3D12 Fence!\n");
         } else {
@@ -258,12 +276,17 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
         }
     }
 
-    // Capture queue from SwapChain directly
-    if (!g_d3d12CommandQueue) {
-        if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&g_d3d12CommandQueue)) && g_d3d12CommandQueue) {
-            Logger::Log("[Dx12Hook] Presentation CommandQueue acquired from SwapChain: %p\n", (void*)g_d3d12CommandQueue);
-        }
+    // Fail-safe edge-detected hotkey toggle for F2 / Insert on the render thread
+    static bool s_f2Prev = false;
+    static bool s_insPrev = false;
+    bool f2Down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    bool insDown = (GetAsyncKeyState(VK_INSERT) & 0x8000) != 0;
+    if ((f2Down && !s_f2Prev) || (insDown && !s_insPrev)) {
+        GuiOverlay::ToggleVisible();
+        Logger::Log("[Dx12Hook] Overlay toggled via hotkey. Visible: %d\n", GuiOverlay::IsVisible());
     }
+    s_f2Prev = f2Down;
+    s_insPrev = insDown;
 
     static TransformInterpolator g_interpolator(0.05);
 
@@ -279,14 +302,24 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
     SafeRenderImGui(pSwapChain);
 }
 
+static thread_local bool s_inPresent = false;
+
 static HRESULT WINAPI Hook_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    if (s_inPresent) return oPresent(pSwapChain, SyncInterval, Flags);
+    s_inPresent = true;
     RenderImGuiFrame(pSwapChain);
-    return oPresent(pSwapChain, SyncInterval, Flags);
+    HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
+    s_inPresent = false;
+    return hr;
 }
 
 static HRESULT WINAPI Hook_Present1(IDXGISwapChain1* pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+    if (s_inPresent) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+    s_inPresent = true;
     RenderImGuiFrame(pSwapChain);
-    return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+    HRESULT hr = oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
+    s_inPresent = false;
+    return hr;
 }
 
 static HRESULT WINAPI Hook_ResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
@@ -360,7 +393,12 @@ bool Dx12Hook::Install() {
 
     pFactory->CreateSwapChain(pDummyQueue, &scDesc, &pDummySwapChain);
 
-    // 1. Hook Present (VTable index 8) and ResizeBuffers (VTable index 13)
+    // 1. Hook ExecuteCommandLists (VTable index 10) on CommandQueue
+    void** pQueueVMT = *reinterpret_cast<void***>(pDummyQueue);
+    void* executeCommandListsAddr = pQueueVMT[10];
+    MH_CreateHook(executeCommandListsAddr, (LPVOID)&Hook_ExecuteCommandLists, reinterpret_cast<LPVOID*>(&oExecuteCommandLists));
+
+    // 2. Hook Present (VTable index 8) and ResizeBuffers (VTable index 13)
     void** pVMT = *reinterpret_cast<void***>(pDummySwapChain);
     void* presentAddress = pVMT[8];
     void* resizeBuffersAddress = pVMT[13];
@@ -368,7 +406,7 @@ bool Dx12Hook::Install() {
     MH_CreateHook(presentAddress, (LPVOID)&Hook_Present, reinterpret_cast<LPVOID*>(&oPresent));
     MH_CreateHook(resizeBuffersAddress, (LPVOID)&Hook_ResizeBuffers, reinterpret_cast<LPVOID*>(&oResizeBuffers));
 
-    // 2. Hook Present1 (VTable index 22) on IDXGISwapChain1
+    // 3. Hook Present1 (VTable index 22) on IDXGISwapChain1
     IDXGISwapChain1* pDummySwapChain1 = nullptr;
     if (SUCCEEDED(pDummySwapChain->QueryInterface(IID_PPV_ARGS(&pDummySwapChain1)))) {
         void** pVMT1 = *reinterpret_cast<void***>(pDummySwapChain1);
@@ -402,6 +440,33 @@ void Dx12Hook::Remove() {
     }
 
     CleanupRenderTargets();
+    for (UINT i = 0; i < 4; ++i) {
+        if (g_d3d12CommandLists[i]) {
+            g_d3d12CommandLists[i]->Release();
+            g_d3d12CommandLists[i] = nullptr;
+        }
+        if (g_d3d12CommandAllocators[i]) {
+            g_d3d12CommandAllocators[i]->Release();
+            g_d3d12CommandAllocators[i] = nullptr;
+        }
+    }
+    if (g_d3d12Fence) {
+        g_d3d12Fence->Release();
+        g_d3d12Fence = nullptr;
+    }
+    if (g_hFenceEvent) {
+        CloseHandle(g_hFenceEvent);
+        g_hFenceEvent = nullptr;
+    }
+    if (g_d3d12SrvHeap) {
+        g_d3d12SrvHeap->Release();
+        g_d3d12SrvHeap = nullptr;
+    }
+    if (g_d3d12RtvHeap) {
+        g_d3d12RtvHeap->Release();
+        g_d3d12RtvHeap = nullptr;
+    }
+
     GuiOverlay::Shutdown();
     s_isInstalled = false;
     Logger::Log("[Dx12Hook] Removed all hooks.\n");

@@ -11,7 +11,7 @@
 namespace CrimsonCoop {
 
 bool GuiOverlay::s_isInitialized = false;
-bool GuiOverlay::s_isVisible = true; // Open by default on launch so the user sees it immediately!
+bool GuiOverlay::s_isVisible = false; // Hidden on startup for clean game boot! Press F2 or Insert to toggle in-game
 ToastNotification GuiOverlay::s_activeToast{};
 ConflictDialogState GuiOverlay::s_conflictDialog{};
 SwapPromptState GuiOverlay::s_swapPrompt{};
@@ -95,22 +95,20 @@ void GuiOverlay::OpenSwapPrompt(PlayerId requesterId, const std::string& request
 }
 
 void GuiOverlay::Render(SessionManager* pSession) {
-    if (!s_isInitialized) return;
+    if (!s_isInitialized || !s_isVisible) return;
 
     ImGui_ImplDX12_NewFrame();
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    // 1. Always draw persistent Watermark / Status Badge so the user sees the mod is active
+    // 1. Watermark / Status Badge
     DrawWatermarkBadge(pSession);
 
-    // 2. Full Greymane Co-Op HUD & Menu (When s_isVisible is true)
-    if (s_isVisible) {
-        DrawPartyHUD(pSession);
-        DrawConflictModal();
-        DrawSwapPrompt(pSession);
-        DrawToasts();
-    }
+    // 2. Full Greymane Co-Op HUD & Menu
+    DrawPartyHUD(pSession);
+    DrawConflictModal();
+    DrawSwapPrompt(pSession);
+    DrawToasts();
 
     ImGui::Render();
 }

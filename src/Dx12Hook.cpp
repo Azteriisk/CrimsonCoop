@@ -44,6 +44,8 @@ static UINT64 g_fenceValues[4] = { 0 };
 static UINT64 g_currentFenceValue = 0;
 static UINT g_bufferCount = 0;
 static bool g_dx12Initialized = false;
+static DWORD g_presentThreadId = 0;
+static uint32_t s_presentCount = 0;
 
 SessionManager* g_pActiveSession = nullptr;
 
@@ -70,9 +72,18 @@ static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, U
             ID3D12Device* pQueueDev = nullptr;
             if (SUCCEEDED(pCommandQueue->GetDevice(IID_PPV_ARGS(&pQueueDev)))) {
                 if (pQueueDev == g_d3d12Device) {
-                    if (g_d3d12CommandQueue != pCommandQueue) {
+                    DWORD curTid = GetCurrentThreadId();
+                    // Lock presentation CommandQueue to the thread calling Present
+                    if (g_presentThreadId != 0 && curTid == g_presentThreadId) {
+                        if (g_d3d12CommandQueue != pCommandQueue) {
+                            g_d3d12CommandQueue = pCommandQueue;
+                            Logger::Log("[Dx12Hook] Acquired DIRECT Presentation CommandQueue from Present Thread (TID %lu): %p\n",
+                                        curTid, (void*)g_d3d12CommandQueue);
+                        }
+                    } else if (g_d3d12CommandQueue == nullptr) {
                         g_d3d12CommandQueue = pCommandQueue;
-                        Logger::Log("[Dx12Hook] Acquired DIRECT Presentation CommandQueue from SwapChain Device: %p\n", (void*)g_d3d12CommandQueue);
+                        Logger::Log("[Dx12Hook] Initial DIRECT CommandQueue captured (TID %lu): %p\n",
+                                    curTid, (void*)g_d3d12CommandQueue);
                     }
                 }
                 pQueueDev->Release();
@@ -98,6 +109,10 @@ static void CleanupRenderTargets() {
 }
 
 static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
+    if (!GuiOverlay::IsVisible()) {
+        return false;
+    }
+
     static bool s_firstRenderLogged = false;
     int step = 0;
     __try {
@@ -312,7 +327,15 @@ static thread_local bool s_inPresent = false;
 static HRESULT WINAPI Hook_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
     if (s_inPresent) return oPresent(pSwapChain, SyncInterval, Flags);
     s_inPresent = true;
-    RenderImGuiFrame(pSwapChain);
+
+    g_presentThreadId = GetCurrentThreadId();
+    s_presentCount++;
+
+    // Wait 90 frames (~1.5s) for D3D12 device, swap chain negotiation, and shader loading to settle
+    if (s_presentCount > 90) {
+        RenderImGuiFrame(pSwapChain);
+    }
+
     HRESULT hr = oPresent(pSwapChain, SyncInterval, Flags);
     s_inPresent = false;
     return hr;
@@ -321,7 +344,14 @@ static HRESULT WINAPI Hook_Present(IDXGISwapChain* pSwapChain, UINT SyncInterval
 static HRESULT WINAPI Hook_Present1(IDXGISwapChain1* pSwapChain, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     if (s_inPresent) return oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
     s_inPresent = true;
-    RenderImGuiFrame(pSwapChain);
+
+    g_presentThreadId = GetCurrentThreadId();
+    s_presentCount++;
+
+    if (s_presentCount > 90) {
+        RenderImGuiFrame(pSwapChain);
+    }
+
     HRESULT hr = oPresent1(pSwapChain, SyncInterval, PresentFlags, pPresentParameters);
     s_inPresent = false;
     return hr;

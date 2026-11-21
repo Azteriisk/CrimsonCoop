@@ -64,14 +64,16 @@ static LRESULT CALLBACK Hook_WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM
 }
 
 static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
-    if (pCommandQueue && !g_d3d12CommandQueue) {
+    if (pCommandQueue && g_d3d12Device) {
         D3D12_COMMAND_QUEUE_DESC desc = pCommandQueue->GetDesc();
         if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
             ID3D12Device* pQueueDev = nullptr;
             if (SUCCEEDED(pCommandQueue->GetDevice(IID_PPV_ARGS(&pQueueDev)))) {
-                if (!g_d3d12Device || pQueueDev == g_d3d12Device) {
-                    g_d3d12CommandQueue = pCommandQueue;
-                    Logger::Log("[Dx12Hook] Acquired DIRECT Presentation CommandQueue from ExecuteCommandLists: %p\n", (void*)g_d3d12CommandQueue);
+                if (pQueueDev == g_d3d12Device) {
+                    if (g_d3d12CommandQueue != pCommandQueue) {
+                        g_d3d12CommandQueue = pCommandQueue;
+                        Logger::Log("[Dx12Hook] Acquired DIRECT Presentation CommandQueue from SwapChain Device: %p\n", (void*)g_d3d12CommandQueue);
+                    }
                 }
                 pQueueDev->Release();
             }
@@ -200,6 +202,9 @@ static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
 
         DXGI_SWAP_CHAIN_DESC desc;
         pSwapChain->GetDesc(&desc);
+        if (desc.BufferDesc.Width < 640 || desc.BufferDesc.Height < 480) {
+            return;
+        }
         g_hGameWindow = desc.OutputWindow;
         g_bufferCount = desc.BufferCount;
         if (g_bufferCount > 4) g_bufferCount = 4;

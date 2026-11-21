@@ -1,4 +1,5 @@
 #include "SaveRedirector.hpp"
+#include "Logger.hpp"
 #include <MinHook.h>
 #include <iostream>
 #include <filesystem>
@@ -35,7 +36,29 @@ bool SaveRedirector::IsSavePath(const std::wstring& path) {
                       (lowerPath.find(L"saved\\save") != std::wstring::npos);
     bool hasSavExt = (lowerPath.length() >= 4 && lowerPath.substr(lowerPath.length() - 4) == L".sav");
 
-    return hasSaveDir && hasSavExt;
+    if (!hasSaveDir || !hasSavExt) return false;
+
+    // Do NOT redirect settings, profiles, audio, or graphics configuration files!
+    // Check only the filename so "C:\Users\..." in the directory path is not falsely matched
+    std::wstring filename;
+    try {
+        fs::path p(path);
+        filename = p.filename().wstring();
+        std::transform(filename.begin(), filename.end(), filename.begin(), ::towlower);
+    } catch (...) {
+        return false;
+    }
+
+    if (filename.find(L"user") != std::wstring::npos ||
+        filename.find(L"setting") != std::wstring::npos ||
+        filename.find(L"profile") != std::wstring::npos ||
+        filename.find(L"config") != std::wstring::npos ||
+        filename.find(L"graphic") != std::wstring::npos ||
+        filename.find(L"engine") != std::wstring::npos) {
+        return false;
+    }
+
+    return true;
 }
 
 std::wstring SaveRedirector::TransformSavePath(const std::wstring& originalPath) {
@@ -81,17 +104,21 @@ static HANDLE WINAPI Hook_CreateFileW(
         if (SaveRedirector::IsSavePath(original)) {
             std::wstring redirected = SaveRedirector::TransformSavePath(original);
 
-            // Ensure the CoopSaveGames directory exists before creating the file
+            // Ensure the CoopSaveGames directory exists
             try {
                 fs::path p(redirected);
                 if (p.has_parent_path()) {
                     fs::create_directories(p.parent_path());
                 }
-            } catch (...) {
-                // Ignore directory creation errors if already exists
-            }
 
-            std::wcout << L"[CoopSaveSandbox] Redirected: " << original << L" -> " << redirected << std::endl;
+                // If the co-op save doesn't exist yet, auto-seed it from the vanilla save
+                // so the user's current campaign progress is seamlessly loaded into co-op!
+                if (!fs::exists(p) && fs::exists(original)) {
+                    fs::copy_file(original, p, fs::copy_options::skip_existing);
+                }
+            } catch (...) {
+                // Ignore filesystem errors if directory already exists
+            }
 
             return oCreateFileW(
                 redirected.c_str(),
@@ -121,7 +148,7 @@ bool SaveRedirector::Install() {
 
     MH_STATUS status = MH_Initialize();
     if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
-        std::cerr << "[SaveRedirector] MH_Initialize failed: " << MH_StatusToString(status) << std::endl;
+        Logger::Log("[SaveRedirector] MH_Initialize failed: %s\n", MH_StatusToString(status));
         return false;
     }
 
@@ -133,18 +160,18 @@ bool SaveRedirector::Install() {
     );
 
     if (status != MH_OK) {
-        std::cerr << "[SaveRedirector] MH_CreateHookApi CreateFileW failed: " << MH_StatusToString(status) << std::endl;
+        Logger::Log("[SaveRedirector] MH_CreateHookApi CreateFileW failed: %s\n", MH_StatusToString(status));
         return false;
     }
 
     status = MH_EnableHook(MH_ALL_HOOKS);
     if (status != MH_OK) {
-        std::cerr << "[SaveRedirector] MH_EnableHook failed: " << MH_StatusToString(status) << std::endl;
+        Logger::Log("[SaveRedirector] MH_EnableHook failed: %s\n", MH_StatusToString(status));
         return false;
     }
 
     s_isInstalled = true;
-    std::cout << "[SaveRedirector] Successfully hooked CreateFileW for .cdcoop save redirection.\n";
+    Logger::Log("[SaveRedirector] Hooked CreateFileW successfully.\n");
     return true;
 }
 
@@ -152,9 +179,8 @@ void SaveRedirector::Remove() {
     if (!s_isInstalled) return;
 
     MH_DisableHook(MH_ALL_HOOKS);
-    MH_Uninitialize();
     s_isInstalled = false;
-    std::cout << "[SaveRedirector] Removed CreateFileW hooks.\n";
+    Logger::Log("[SaveRedirector] Hooks removed.\n");
 }
 
 } // namespace CrimsonCoop

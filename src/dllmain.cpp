@@ -54,11 +54,15 @@ DWORD WINAPI ModMainThread(LPVOID lpParam) {
         Logger::Log("[Core] Error: Failed to initialize SaveRedirector!\n");
     }
 
-    // 6. Install DX12 Present & CommandQueue Hooks for In-Game ImGui Overlay
-    if (Dx12Hook::Install()) {
-        Logger::Log("[Core] DX12 SwapChain & CommandQueue hooks active: In-game HUD ready.\n");
+    // 6. Install DX12 Present & CommandQueue Hooks for In-Game ImGui Overlay (Optional)
+    if (cfg.showPartyHUD) {
+        if (Dx12Hook::Install()) {
+            Logger::Log("[Core] DX12 SwapChain & CommandQueue hooks active: In-game HUD ready.\n");
+        } else {
+            Logger::Log("[Core] Error: Failed to initialize Dx12Hook!\n");
+        }
     } else {
-        Logger::Log("[Core] Error: Failed to initialize Dx12Hook!\n");
+        Logger::Log("[Core] DX12 HUD Overlay disabled in config (Zero graphics overhead mode).\n");
     }
 
     // 7. Install Visual Equipment Synchronizer

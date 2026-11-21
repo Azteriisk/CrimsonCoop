@@ -9,6 +9,7 @@
 #include "ActionCombatSync.hpp"
 #include "SteamTransport.hpp"
 #include "RemoteProxyManager.hpp"
+#include "GuiOverlay.hpp"
 #include "Common.hpp"
 
 namespace CrimsonCoop {
@@ -103,7 +104,11 @@ __declspec(dllexport) bool CrimsonCoop_RequestCharacterSwitch(uint8_t charId) {
     else if (charId == 2) ct = CrimsonCoop::CharacterType::Damiane;
     else if (charId == 3) ct = CrimsonCoop::CharacterType::Oongka;
     std::string reason;
-    return CrimsonCoop::g_pActiveSession->SwitchLocalCharacter(ct, reason);
+    bool res = CrimsonCoop::g_pActiveSession->SwitchLocalCharacter(ct, reason);
+    if (res) {
+        CrimsonCoop::GuiOverlay::ShowToast(std::string("Switched active hero to ") + CrimsonCoop::CharacterToString(ct));
+    }
+    return res;
 }
 
 } // extern "C"

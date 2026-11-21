@@ -1,3 +1,4 @@
+#include "VisualWatermark.hpp"
 #include <windows.h>
 #include <iostream>
 #include "Logger.hpp"
@@ -79,6 +80,16 @@ DWORD WINAPI ModMainThread(LPVOID lpParam) {
     SteamTransport::Initialize(76561198000000001ULL, true);
     Logger::Log("[Core] Native Steamworks P2P Transport initialized.\n");
 
+    // 10. Display Visible On-Screen Top-Right Watermark Badge ("* CrimsonCoop Active")
+    HWND hGameWnd = nullptr;
+    for (int i = 0; i < 40; ++i) {
+        hGameWnd = FindWindowW(nullptr, L"Crimson Desert");
+        if (hGameWnd) break;
+        Sleep(100);
+    }
+    VisualWatermark::Initialize(hGameWnd);
+    Logger::Log("[Core] On-screen watermark badge initialized on window %p.\n", (void*)hGameWnd);
+
     return 0;
 }
 
@@ -111,8 +122,17 @@ __declspec(dllexport) bool CrimsonCoop_RequestCharacterSwitch(uint8_t charId) {
     bool res = CrimsonCoop::g_pActiveSession->SwitchLocalCharacter(ct, reason);
     if (res) {
         CrimsonCoop::GuiOverlay::ShowToast(std::string("Switched active hero to ") + CrimsonCoop::CharacterToString(ct));
+        std::wstring wname = (ct == CrimsonCoop::CharacterType::Damiane) ? L"Damiane" :
+                             ((ct == CrimsonCoop::CharacterType::Oongka) ? L"Oongka" : L"Kliff");
+        CrimsonCoop::VisualWatermark::UpdateStatus(wname, true);
     }
     return res;
+}
+
+__declspec(dllexport) void CrimsonCoop_SetWatermarkHero(const wchar_t* heroName) {
+    if (heroName) {
+        CrimsonCoop::VisualWatermark::UpdateStatus(heroName, true);
+    }
 }
 
 } // extern "C"

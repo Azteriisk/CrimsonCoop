@@ -73,6 +73,7 @@ set(CORE_SOURCES
     src/CoopSaveManager.cpp
     src/SaveRedirector.cpp
     src/GuiOverlay.cpp
+    src/VisualWatermark.cpp
     src/Dx12Hook.cpp
     src/PatternScan.cpp
     src/BlackSpaceChain.cpp

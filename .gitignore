@@ -1,0 +1,24 @@
+# Build artifacts
+build/
+bin/
+out/
+
+# Compilers & Linker outputs
+*.obj
+*.pdb
+*.lib
+*.exp
+*.exe
+*.dll
+*.ilk
+
+# Save files & test dumps
+*.cdcoop
+*.sav
+
+# IDE & Editor folders
+.vs/
+.vscode/
+.idea/
+CMakeSettings.json
+compile_commands.json

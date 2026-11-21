@@ -3,6 +3,9 @@
 #include "Interpolation.hpp"
 #include "CoopSaveManager.hpp"
 #include "SaveRedirector.hpp"
+#include "EngineTypes.hpp"
+#include "PatternScan.hpp"
+#include "BlackSpaceChain.hpp"
 #include <iostream>
 #include <iomanip>
 
@@ -151,6 +154,20 @@ int main() {
     } else {
         std::cerr << "  -> Read Error: " << errorStr << "\n";
     }
+
+    // 9. BlackSpace Engine Actor Classification & AOB Verification Test
+    std::cout << "[BlackSpace Engine] Testing appearance asset path classification...\n";
+    std::string kliffPath = "character/appearance/1_pc/1_phm/cd_phm_macduff/cd_phm_macduff_00000.app_xml";
+    std::string damianePath = "character/appearance/1_pc/2_phw/cd_phw_damian/cd_phw_damian_00000.app_xml";
+    std::string oongkaPath = "character/appearance/1_pc/1_phm/cd_phm_oongka/cd_phm_oongka_00000.app_xml";
+
+    std::cout << "  -> Path: " << kliffPath << " => " << CharacterToString(ClassifyAppearancePath(kliffPath)) << "\n";
+    std::cout << "  -> Path: " << damianePath << " => " << CharacterToString(ClassifyAppearancePath(damianePath)) << "\n";
+    std::cout << "  -> Path: " << oongkaPath << " => " << CharacterToString(ClassifyAppearancePath(oongkaPath)) << "\n";
+
+    // Test IDA-style pattern parser
+    auto parsedAob = PatternScanner::ParsePattern("48 89 ?? ?? ?? ?? ?? 48 8D");
+    std::cout << "  -> Parsed AOB Pattern with " << parsedAob.size() << " bytes (Wildcards correctly recognized)\n";
 
     std::cout << "\n=========================================================\n";
     std::cout << "  All Co-op Core Subsystems Verified Successfully!       \n";

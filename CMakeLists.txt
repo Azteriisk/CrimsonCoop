@@ -70,6 +70,8 @@ set(CORE_SOURCES
     src/SaveRedirector.cpp
     src/GuiOverlay.cpp
     src/Dx12Hook.cpp
+    src/PatternScan.cpp
+    src/BlackSpaceChain.cpp
 )
 
 # Executable Test Harness

@@ -154,6 +154,28 @@ std::wstring FindModDll() {
     return L"";
 }
 
+// Check if companion mod loading is enabled in CrimsonCoop.ini
+bool ShouldLoadCompanionSwitch() {
+    fs::path current = fs::current_path();
+    std::vector<fs::path> iniCandidates = {
+        current / L"CrimsonCoop.ini",
+        current.parent_path() / L"CrimsonCoop.ini"
+    };
+
+    for (const auto& p : iniCandidates) {
+        if (fs::exists(p)) {
+            wchar_t val[64] = {};
+            GetPrivateProfileStringW(L"CompanionMods", L"LoadSwitchMod", L"true", val, 64, p.wstring().c_str());
+            std::wstring s(val);
+            if (s == L"false" || s == L"0" || s == L"False" || s == L"FALSE") {
+                return false;
+            }
+            return true;
+        }
+    }
+    return true;
+}
+
 // Locate the companion CrimsonSwitch DLL if installed
 std::wstring FindSwitchDll() {
     fs::path current = fs::current_path();
@@ -261,12 +283,15 @@ int main() {
         }
 
         bool coopInjected = CrimsonLauncher::InjectDll(hProcess, modDllPath);
-        std::wstring switchDllPath = CrimsonLauncher::FindSwitchDll();
+        bool loadSwitchEnabled = CrimsonLauncher::ShouldLoadCompanionSwitch();
+        std::wstring switchDllPath = loadSwitchEnabled ? CrimsonLauncher::FindSwitchDll() : L"";
         bool switchInjected = false;
         if (!switchDllPath.empty()) {
             std::wcout << L"[Launcher] Found companion CrimsonSwitch mod: " << switchDllPath << L"\n";
             std::cout << "[Launcher] Attaching CrimsonSwitch.dll into running game session...\n";
             switchInjected = CrimsonLauncher::InjectDll(hProcess, switchDllPath);
+        } else if (!loadSwitchEnabled) {
+            std::cout << "[Launcher] Companion CrimsonSwitch mod disabled via CrimsonCoop.ini.\n";
         }
 
         if (coopInjected) {
@@ -354,7 +379,8 @@ int main() {
         std::wcerr << L"  -> [FAILED] DLL Injection failed. Game will start vanilla.\n";
     }
 
-    std::wstring switchDllPath = CrimsonLauncher::FindSwitchDll();
+    bool loadSwitchEnabled = CrimsonLauncher::ShouldLoadCompanionSwitch();
+    std::wstring switchDllPath = loadSwitchEnabled ? CrimsonLauncher::FindSwitchDll() : L"";
     bool switchInjected = false;
     if (!switchDllPath.empty()) {
         std::wcout << L"[Launcher] Found companion CrimsonSwitch mod: " << switchDllPath << L"\n";
@@ -364,6 +390,8 @@ int main() {
             std::cout << "  -> [SUCCESS] CrimsonSwitch mod injected into RAM!\n";
             std::cout << "  -> 3-Mercenary instant radial unlocked.\n";
         }
+    } else if (!loadSwitchEnabled) {
+        std::cout << "[Launcher] Companion CrimsonSwitch mod disabled via CrimsonCoop.ini.\n";
     }
 
     CloseHandle(pi.hThread);

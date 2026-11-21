@@ -80,6 +80,7 @@ static void WINAPI Hook_ExecuteCommandLists(ID3D12CommandQueue* pCommandQueue, U
 }
 
 static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
+    static bool s_firstRenderLogged = false;
     __try {
         if (!g_dx12Initialized || !g_d3d12CommandQueue) return false;
 
@@ -128,20 +129,23 @@ static bool SafeRenderImGui(IDXGISwapChain* pSwapChain) {
 
         ID3D12CommandList* const ppCommandLists[] = { g_d3d12CommandList };
         g_d3d12CommandQueue->ExecuteCommandLists(1, ppCommandLists);
+        if (!s_firstRenderLogged) {
+            s_firstRenderLogged = true;
+            Logger::Log("[Dx12Hook] First ImGui frame rendered successfully to SwapChain!\n");
+        }
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
+        static bool s_exceptionLogged = false;
+        if (!s_exceptionLogged) {
+            s_exceptionLogged = true;
+            Logger::Log("[Dx12Hook] Exception caught in SafeRenderImGui! Skipping frame.\n");
+        }
         return false;
     }
 }
 
 static void RenderImGuiFrame(IDXGISwapChain* pSwapChain) {
     if (!pSwapChain) return;
-
-    // Fail-safe hotkey toggle via GetAsyncKeyState
-    if ((GetAsyncKeyState(VK_F2) & 1) || (GetAsyncKeyState(VK_INSERT) & 1)) {
-        GuiOverlay::ToggleVisible();
-        Logger::Log("[Dx12Hook] Hotkey F2/Insert detected via GetAsyncKeyState. Visible: %d\n", GuiOverlay::IsVisible());
-    }
 
     if (!g_dx12Initialized) {
         if (FAILED(pSwapChain->GetDevice(IID_PPV_ARGS(&g_d3d12Device)))) {

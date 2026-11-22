@@ -4,8 +4,34 @@
 [![DirectX 12](https://img.shields.io/badge/DirectX-12-green.svg)](https://docs.microsoft.com/en-us/windows/win32/direct3d12/direct3d-12-graphics)
 [![Steamworks](https://img.shields.io/badge/Steamworks-P2P%20SDR-1b2838.svg)](https://partner.steamgames.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status: Pre--Alpha / Architectural WIP](https://img.shields.io/badge/Status-Pre--Alpha%20%2F%20WIP-orange.svg)](https://github.com/Azteriisk/CrimsonCoop)
 
-**CrimsonCoop** is a cooperative multiplayer framework and mod architecture designed for *Crimson Desert*. Built in modern C++20 and DirectX 12, it enables players to concurrently explore and fight side-by-side as the three canon mercenaries: **Kliff**, **Damiane**, and **Oongka**.
+> [!WARNING]
+> ### ⚠️ PROJECT STATUS: PRE-ALPHA ARCHITECTURAL FRAMEWORK (WIP)
+> **THIS MOD IS UNDER ACTIVE DEVELOPMENT AND IS NOT YET PLAYABLE IN LIVE CO-OP.**
+>
+> While the networking architecture, Steamworks P2P SDR transport, save sandboxing (`.cdcoop`), memory injector launcher, and visual watermark overlay are functional:
+> - **In-Game Co-Op Gameplay:** Live multiplayer synchronization is currently **blocked** pending upstream companion actor proxy spawning and control handover in the proprietary BlackSpace Engine (see [CrimsonSwitch](https://github.com/Azteriisk/CrimsonSwitch)).
+> - **DirectX 12 In-Game HUD Hook (`F2` / `Insert`):** Hooking into the BlackSpace Engine's DX12 command queue and swapchain present barriers caused rendering pipeline race conditions on certain GPU drivers. The DX12 ImGui overlay is currently disabled in favor of a rock-solid, transparent click-through Win32 watermark badge (`[CrimsonCoop [ACTIVE: <Hero>]]`).
+>
+> **We are actively seeking reverse engineers, DirectX 12 graphics programmers, and engine modders to contribute!**
+
+**CrimsonCoop** is an open-source cooperative multiplayer framework and mod architecture designed for *Crimson Desert*. Built in modern C++20 and DirectX 12, its mission is to enable players to concurrently explore and fight side-by-side as the three canon mercenaries: **Kliff**, **Damiane**, and **Oongka**.
+
+---
+
+## Current Status & Feature Matrix
+
+| Subsystem / Feature | Status | Notes |
+| :--- | :---: | :--- |
+| **RAM Injection Launcher** | ✅ **WORKING** | Injects `CrimsonCoop.dll` + `CrimsonSwitch.dll` with zero permanent file modifications. |
+| **Visual Watermark Overlay** | ✅ **WORKING** | Top-right click-through transparent Win32 badge displaying active player and session status. |
+| **Steamworks P2P SDR Driver** | ✅ **WORKING** | Encapsulates native `ISteamNetworkingSockets` and `ISteamMatchmaking` VTables. |
+| **Save Sandboxing (`.cdcoop`)** | ✅ **WORKING** | Intercepts `CreateFileW` via MinHook to safeguard single-player vanilla `Slot*.sav`. |
+| **14-Subsystem Test Harness** | ✅ **WORKING** | Full automated unit testing in `crimson_coop_harness.exe`. |
+| **DirectX 12 ImGui Overlay** | ⚠️ **UNSTABLE** | Hook disabled in `CrimsonCoop.ini` (`ShowPartyHUD = false`) due to swapchain barrier conflicts. |
+| **Remote Companion Proxy Spawning** | ❌ **BLOCKED** | Blocked upstream; requires instantiating companion `CCOIA` actors in BlackSpace Engine. |
+| **Live P2P Movement & Combat Sync** | 🟡 **STUBBED** | Packet protocols and interpolation ready; awaiting live remote actor injection. |
 
 ---
 
@@ -113,6 +139,18 @@ CrimsonCoop/
     ├── GuiOverlay.cpp             # ImGui rendering routines
     └── Logger.cpp                 # File logging implementation
 ```
+
+---
+
+## Contributing & Research Areas
+
+We are actively seeking collaboration from the game modding and reverse-engineering community in the following areas:
+
+1. **BlackSpace Engine Actor Spawning:** Assisting [CrimsonSwitch](https://github.com/Azteriisk/CrimsonSwitch) in unlocking dynamic companion actor creation (`CCOIA`) in the prologue so remote player proxies can be injected into companion slots.
+2. **DirectX 12 SwapChain Hook Synchronization:** Hardening the `IDXGISwapChain::Present` / `ID3D12CommandQueue` hooks against BlackSpace Engine presentation fences so the Dear ImGui in-game party HUD can render without crashing the display pipeline.
+3. **Steam P2P SDR Testing:** Field-testing SDR packet routing, NAT punch-through, and ping performance across different network topologies.
+
+If you are interested in contributing, please open an Issue or Discussion on [GitHub](https://github.com/Azteriisk/CrimsonCoop/issues) or submit a Pull Request!
 
 ---
 
